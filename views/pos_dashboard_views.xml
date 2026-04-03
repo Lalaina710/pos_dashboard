@@ -10,5 +10,6 @@
         name="Tableau de bord"
         parent="point_of_sale.menu_point_root"
         action="action_pos_dashboard"
-        sequence="1"/>
+        sequence="1"
+        groups="pos_dashboard.group_pos_dashboard_user"/>
 </odoo>

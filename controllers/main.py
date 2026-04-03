@@ -1,12 +1,16 @@
 from odoo import http
 from odoo.http import request
 from datetime import datetime, timedelta
+from werkzeug.exceptions import Forbidden
 
 
 class PosDashboardController(http.Controller):
 
     @http.route('/pos_dashboard/data', type='json', auth='user')
     def get_dashboard_data(self, **kwargs):
+        if not request.env.user.has_group('pos_dashboard.group_pos_dashboard_user'):
+            raise Forbidden("Accès non autorisé au dashboard PdV")
+
         PosOrder = request.env['pos.order']
         PosSession = request.env['pos.session']
         PosPayment = request.env['pos.payment']
@@ -194,6 +198,9 @@ class PosDashboardController(http.Controller):
     @http.route('/pos_dashboard/filters_data', type='json', auth='user')
     def get_filters_data(self):
         """Retourne les données pour les listes déroulantes des filtres."""
+        if not request.env.user.has_group('pos_dashboard.group_pos_dashboard_user'):
+            raise Forbidden("Accès non autorisé au dashboard PdV")
+
         # Points de vente
         pos_configs = request.env['pos.config'].search_read(
             [],

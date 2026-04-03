@@ -49,5 +49,5 @@
         parent="point_of_sale.menu_point_config_product"
         action="action_pos_dashboard_config"
         sequence="100"
-        groups="point_of_sale.group_pos_manager"/>
+        groups="pos_dashboard.group_pos_dashboard_manager"/>
 </odoo>
