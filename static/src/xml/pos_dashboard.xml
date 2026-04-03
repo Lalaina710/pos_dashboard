@@ -201,7 +201,7 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <t t-foreach="state.data.payment_methods" t-as="pm" t-key="pm.id">
+                                        <t t-foreach="state.data.payment_methods" t-as="pm" t-key="pm_index">
                                             <tr>
                                                 <td t-esc="pm.method"/>
                                                 <td class="text-end"><t t-esc="formatCurrency(pm.amount)"/></td>
@@ -242,7 +242,7 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <t t-foreach="state.data.top_products" t-as="prod" t-key="prod.id">
+                                        <t t-foreach="state.data.top_products" t-as="prod" t-key="prod_index">
                                             <tr>
                                                 <td>
                                                     <span t-attf-class="rank-badge {{ prod_index &lt; 3 ? 'rank-top' : '' }}">
