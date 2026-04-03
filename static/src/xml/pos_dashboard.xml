@@ -1,0 +1,310 @@
+<?xml version="1.0" encoding="utf-8"?>
+<templates xml:space="preserve">
+    <t t-name="pos_dashboard.PosDashboard">
+        <div class="pos_dashboard">
+            <!-- Header avec contrôles -->
+            <div class="db-header">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h1 class="db-title mb-0">Tableau de bord Point de Vente</h1>
+                    <div class="db-controls">
+                        <span class="db-last-update" t-if="state.lastUpdate">
+                            <i class="fa fa-clock-o"/> <t t-esc="state.lastUpdate"/>
+                        </span>
+
+                        <!-- Auto-refresh -->
+                        <select class="db-select"
+                                t-on-change="(ev) => this.onRefreshIntervalChange(ev)">
+                            <option value="0" t-att-selected="state.autoRefreshInterval === 0 ? 'selected' : undefined">
+                                Auto: Off
+                            </option>
+                            <option value="30" t-att-selected="state.autoRefreshInterval === 30 ? 'selected' : undefined">
+                                30s
+                            </option>
+                            <option value="60" t-att-selected="state.autoRefreshInterval === 60 ? 'selected' : undefined">
+                                1 min
+                            </option>
+                            <option value="120" t-att-selected="state.autoRefreshInterval === 120 ? 'selected' : undefined">
+                                2 min
+                            </option>
+                            <option value="300" t-att-selected="state.autoRefreshInterval === 300 ? 'selected' : undefined">
+                                5 min
+                            </option>
+                        </select>
+
+                        <button t-attf-class="btn-filter {{ hasActiveFilters() ? 'active' : '' }}"
+                                t-on-click="toggleFilters">
+                            <i class="fa fa-filter"/>
+                            Filtres
+                            <span class="filter-dot" t-if="hasActiveFilters()"/>
+                        </button>
+
+                        <button class="btn-refresh" t-on-click="() => this.loadData()">
+                            <i class="fa fa-refresh"/> Actualiser
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Panneau de filtres (collapsible) -->
+                <div class="db-filters-panel" t-if="state.showFilters">
+                    <div class="filters-grid">
+                        <div class="filter-group">
+                            <label>Date début</label>
+                            <input type="date" class="filter-input"
+                                   t-att-value="state.filters.date_from"
+                                   t-on-change="(ev) => this.onFilterChange('date_from', ev)"/>
+                        </div>
+                        <div class="filter-group">
+                            <label>Date fin</label>
+                            <input type="date" class="filter-input"
+                                   t-att-value="state.filters.date_to"
+                                   t-on-change="(ev) => this.onFilterChange('date_to', ev)"/>
+                        </div>
+                        <div class="filter-group">
+                            <label>Point de vente</label>
+                            <select class="filter-input"
+                                    t-on-change="(ev) => this.onFilterChange('pos_config_id', ev)">
+                                <option value="0">-- Tous --</option>
+                                <t t-foreach="state.pos_configs" t-as="cfg" t-key="cfg.id">
+                                    <option t-att-value="cfg.id"
+                                            t-att-selected="state.filters.pos_config_id === cfg.id ? 'selected' : undefined">
+                                        <t t-esc="cfg.name"/>
+                                    </option>
+                                </t>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Caissier</label>
+                            <select class="filter-input"
+                                    t-on-change="(ev) => this.onFilterChange('user_id', ev)">
+                                <option value="0">-- Tous --</option>
+                                <t t-foreach="state.users" t-as="user" t-key="user.id">
+                                    <option t-att-value="user.id"
+                                            t-att-selected="state.filters.user_id === user.id ? 'selected' : undefined">
+                                        <t t-esc="user.name"/>
+                                    </option>
+                                </t>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Jours graphique</label>
+                            <select class="filter-input"
+                                    t-on-change="(ev) => this.onFilterChange('chart_days', ev)">
+                                <option value="7" t-att-selected="state.filters.chart_days === 7 ? 'selected' : undefined">7 jours</option>
+                                <option value="14" t-att-selected="state.filters.chart_days === 14 ? 'selected' : undefined">14 jours</option>
+                                <option value="30" t-att-selected="state.filters.chart_days === 30 ? 'selected' : undefined">30 jours</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Période stats</label>
+                            <select class="filter-input"
+                                    t-on-change="(ev) => this.onFilterChange('recent_days', ev)">
+                                <option value="7" t-att-selected="state.filters.recent_days === 7 ? 'selected' : undefined">7 jours</option>
+                                <option value="30" t-att-selected="state.filters.recent_days === 30 ? 'selected' : undefined">30 jours</option>
+                                <option value="60" t-att-selected="state.filters.recent_days === 60 ? 'selected' : undefined">60 jours</option>
+                                <option value="90" t-att-selected="state.filters.recent_days === 90 ? 'selected' : undefined">90 jours</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="filters-actions">
+                        <button class="btn-apply" t-on-click="applyFilters">
+                            <i class="fa fa-check"/> Appliquer
+                        </button>
+                        <button class="btn-reset" t-on-click="resetFilters">
+                            <i class="fa fa-times"/> Réinitialiser
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <t t-if="state.loading">
+                <div class="loading">
+                    <i class="fa fa-spinner fa-spin fa-2x me-2"/> Chargement...
+                </div>
+            </t>
+
+            <t t-else="">
+                <!-- KPI Cards -->
+                <div class="kpi-row">
+                    <div class="kpi-card sessions" t-on-click="() => this.openSessions()">
+                        <div class="kpi-value" t-esc="state.data.open_sessions_count || 0"/>
+                        <div class="kpi-label">Sessions ouvertes</div>
+                    </div>
+                    <div class="kpi-card orders_today" t-on-click="() => this.openOrdersToday()">
+                        <div class="kpi-value" t-esc="state.data.orders_today_count || 0"/>
+                        <div class="kpi-label">Commandes aujourd'hui</div>
+                    </div>
+                    <div class="kpi-card ca_today">
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_today)"/> DH</div>
+                        <div class="kpi-label">CA aujourd'hui</div>
+                    </div>
+                    <div class="kpi-card avg_basket">
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.avg_basket)"/> DH</div>
+                        <div class="kpi-label">Panier moyen</div>
+                    </div>
+                    <div class="kpi-card ca_month" t-on-click="() => this.openMonthOrders()">
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_month)"/> DH</div>
+                        <div class="kpi-label">CA ce mois</div>
+                    </div>
+                    <div class="kpi-card orders_month" t-on-click="() => this.openMonthOrders()">
+                        <div class="kpi-value" t-esc="state.data.orders_month_count || 0"/>
+                        <div class="kpi-label">Commandes ce mois</div>
+                    </div>
+                    <div class="kpi-card returns" t-on-click="() => this.openReturnsToday()">
+                        <div class="kpi-value" t-esc="state.data.returns_today_count || 0"/>
+                        <div class="kpi-label">Retours aujourd'hui</div>
+                    </div>
+                    <div class="kpi-card clients">
+                        <div class="kpi-value" t-esc="state.data.distinct_partners || 0"/>
+                        <div class="kpi-label">Clients servis</div>
+                    </div>
+                </div>
+
+                <div class="db-columns">
+                    <!-- Colonne gauche : Graphique CA + Moyens de paiement -->
+                    <div class="db-col">
+                        <div class="db-section">
+                            <div class="db-section-title">
+                                <i class="fa fa-bar-chart me-2"/>
+                                CA quotidien - <t t-esc="state.filters.chart_days"/> derniers jours
+                                <span class="float-end text-muted" style="font-size:0.85rem;">
+                                    <t t-esc="state.filters.recent_days"/>j:
+                                    <strong t-esc="state.data.total_orders_recent"/> cmd
+                                    / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/> DH
+                                </span>
+                            </div>
+                            <div class="chart-container">
+                                <div class="bar-chart">
+                                    <t t-foreach="state.data.daily_ca" t-as="day" t-key="day.date">
+                                        <div class="bar-group">
+                                            <div class="bar-value" t-esc="formatCurrency(day.total)"/>
+                                            <div class="bar"
+                                                 t-attf-style="height: {{ getBarHeight(day.total) }}px"/>
+                                            <div class="bar-label" t-esc="day.date"/>
+                                        </div>
+                                    </t>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Moyens de paiement -->
+                        <div class="db-section">
+                            <div class="db-section-title">
+                                <i class="fa fa-credit-card me-2"/>Moyens de paiement
+                            </div>
+                            <t t-if="state.data.payment_methods.length">
+                                <table class="pos-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Mode de paiement</th>
+                                            <th class="text-end">Montant</th>
+                                            <th class="text-end">% du total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <t t-foreach="state.data.payment_methods" t-as="pm" t-key="pm.method">
+                                            <tr>
+                                                <td t-esc="pm.method"/>
+                                                <td class="text-end"><t t-esc="formatCurrency(pm.amount)"/> DH</td>
+                                                <td class="text-end">
+                                                    <div class="pct-bar-container">
+                                                        <div class="pct-bar-fill" t-attf-style="width: {{ pm.pct }}%"/>
+                                                    </div>
+                                                    <span class="pct-label"><t t-esc="pm.pct"/>%</span>
+                                                </td>
+                                            </tr>
+                                        </t>
+                                    </tbody>
+                                </table>
+                            </t>
+                            <t t-else="">
+                                <div class="text-muted text-center p-3">Aucune donnée de paiement</div>
+                            </t>
+                        </div>
+                    </div>
+
+                    <!-- Colonne droite : Top produits + Sessions actives -->
+                    <div class="db-col">
+                        <div class="db-section">
+                            <div class="db-section-title">
+                                <i class="fa fa-trophy me-2"/>Top <t t-esc="state.filters.top_products_limit"/> produits
+                                <span class="float-end text-muted" style="font-size:0.85rem;">
+                                    <t t-esc="state.filters.recent_days"/> derniers jours
+                                </span>
+                            </div>
+                            <t t-if="state.data.top_products.length">
+                                <table class="pos-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Produit</th>
+                                            <th class="text-end">Qté vendue</th>
+                                            <th class="text-end">CA</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <t t-foreach="state.data.top_products" t-as="prod" t-key="prod.product">
+                                            <tr>
+                                                <td>
+                                                    <span t-attf-class="rank-badge {{ prod_index &lt; 3 ? 'rank-top' : '' }}">
+                                                        <t t-esc="prod_index + 1"/>
+                                                    </span>
+                                                </td>
+                                                <td t-esc="prod.product"/>
+                                                <td class="text-end" t-esc="formatQty(prod.qty)"/>
+                                                <td class="text-end"><t t-esc="formatCurrency(prod.ca)"/> DH</td>
+                                            </tr>
+                                        </t>
+                                    </tbody>
+                                </table>
+                            </t>
+                            <t t-else="">
+                                <div class="text-muted text-center p-4">
+                                    <i class="fa fa-inbox fa-2x mb-2 d-block"/>
+                                    Aucune vente sur la période
+                                </div>
+                            </t>
+                        </div>
+
+                        <!-- Sessions actives -->
+                        <div class="db-section">
+                            <div class="db-section-title">
+                                <i class="fa fa-desktop me-2"/>Sessions actives
+                                <span class="float-end text-muted" style="font-size:0.85rem;">
+                                    <t t-esc="state.data.active_sessions.length"/> session(s)
+                                </span>
+                            </div>
+                            <t t-if="state.data.active_sessions.length">
+                                <table class="pos-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Session</th>
+                                            <th>Caissier</th>
+                                            <th>Point de vente</th>
+                                            <th>Ouverture</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <t t-foreach="state.data.active_sessions" t-as="sess" t-key="sess.id">
+                                            <tr>
+                                                <td t-esc="sess.name"/>
+                                                <td t-esc="sess.user_id ? sess.user_id[1] : '-'"/>
+                                                <td t-esc="sess.config_id ? sess.config_id[1] : '-'"/>
+                                                <td t-esc="formatDatetime(sess.start_at)"/>
+                                            </tr>
+                                        </t>
+                                    </tbody>
+                                </table>
+                            </t>
+                            <t t-else="">
+                                <div class="text-muted text-center p-3">
+                                    <i class="fa fa-power-off fa-2x mb-2 d-block"/>
+                                    Aucune session ouverte
+                                </div>
+                            </t>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+</templates>

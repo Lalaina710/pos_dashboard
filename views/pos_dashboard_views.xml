@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_pos_dashboard" model="ir.actions.client">
+        <field name="name">Tableau de bord POS</field>
+        <field name="tag">pos_dashboard.PosDashboard</field>
+    </record>
+
+    <menuitem
+        id="menu_pos_dashboard"
+        name="Tableau de bord"
+        parent="point_of_sale.menu_point_root"
+        action="action_pos_dashboard"
+        sequence="1"/>
+</odoo>

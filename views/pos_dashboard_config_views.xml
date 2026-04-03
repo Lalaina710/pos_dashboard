@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_pos_dashboard_config_form" model="ir.ui.view">
+        <field name="name">pos.dashboard.config.form</field>
+        <field name="model">pos.dashboard.config</field>
+        <field name="arch" type="xml">
+            <form string="Configuration Dashboard POS">
+                <sheet>
+                    <group>
+                        <group string="Paramètres d'affichage">
+                            <field name="chart_days"/>
+                            <field name="recent_days"/>
+                            <field name="top_products_limit"/>
+                        </group>
+                        <group string="Comportement">
+                            <field name="auto_refresh_interval"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_pos_dashboard_config_list" model="ir.ui.view">
+        <field name="name">pos.dashboard.config.list</field>
+        <field name="model">pos.dashboard.config</field>
+        <field name="arch" type="xml">
+            <list string="Configurations Dashboard POS">
+                <field name="name"/>
+                <field name="chart_days"/>
+                <field name="recent_days"/>
+                <field name="top_products_limit"/>
+                <field name="auto_refresh_interval"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_pos_dashboard_config" model="ir.actions.act_window">
+        <field name="name">Configuration Dashboard</field>
+        <field name="res_model">pos.dashboard.config</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem
+        id="menu_pos_dashboard_config"
+        name="Config. Dashboard"
+        parent="point_of_sale.menu_point_config_product"
+        action="action_pos_dashboard_config"
+        sequence="100"
+        groups="point_of_sale.group_pos_manager"/>
+</odoo>
