@@ -134,15 +134,15 @@
                         <div class="kpi-label">Commandes aujourd'hui</div>
                     </div>
                     <div class="kpi-card ca_today">
-                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_today)"/> DH</div>
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_today)"/></div>
                         <div class="kpi-label">CA aujourd'hui</div>
                     </div>
                     <div class="kpi-card avg_basket">
-                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.avg_basket)"/> DH</div>
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.avg_basket)"/></div>
                         <div class="kpi-label">Panier moyen</div>
                     </div>
                     <div class="kpi-card ca_month" t-on-click="() => this.openMonthOrders()">
-                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_month)"/> DH</div>
+                        <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_month)"/></div>
                         <div class="kpi-label">CA ce mois</div>
                     </div>
                     <div class="kpi-card orders_month" t-on-click="() => this.openMonthOrders()">
@@ -169,7 +169,7 @@
                                 <span class="float-end text-muted" style="font-size:0.85rem;">
                                     <t t-esc="state.filters.recent_days"/>j:
                                     <strong t-esc="state.data.total_orders_recent"/> cmd
-                                    / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/> DH
+                                    / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/>
                                 </span>
                             </div>
                             <div class="chart-container">
@@ -204,7 +204,7 @@
                                         <t t-foreach="state.data.payment_methods" t-as="pm" t-key="pm.id">
                                             <tr>
                                                 <td t-esc="pm.method"/>
-                                                <td class="text-end"><t t-esc="formatCurrency(pm.amount)"/> DH</td>
+                                                <td class="text-end"><t t-esc="formatCurrency(pm.amount)"/></td>
                                                 <td class="text-end">
                                                     <div class="pct-bar-container">
                                                         <div class="pct-bar-fill" t-attf-style="width: {{ pm.pct }}%"/>
@@ -251,7 +251,7 @@
                                                 </td>
                                                 <td t-esc="prod.product"/>
                                                 <td class="text-end" t-esc="formatQty(prod.qty)"/>
-                                                <td class="text-end"><t t-esc="formatCurrency(prod.ca)"/> DH</td>
+                                                <td class="text-end"><t t-esc="formatCurrency(prod.ca)"/></td>
                                             </tr>
                                         </t>
                                     </tbody>

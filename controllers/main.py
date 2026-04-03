@@ -179,7 +179,15 @@ class PosDashboardController(http.Controller):
         # Config pour le frontend
         config = request.env['pos.dashboard.config'].get_config()
 
+        # Devise de la société
+        currency = request.env.company.currency_id
+        currency_info = {
+            'symbol': currency.symbol or '',
+            'position': currency.position or 'after',
+        }
+
         return {
+            'currency': currency_info,
             'open_sessions_count': open_sessions_count,
             'orders_today_count': orders_today_count,
             'ca_today': round(ca_today, 2),
