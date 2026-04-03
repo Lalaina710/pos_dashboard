@@ -143,6 +143,7 @@ class PosDashboardController(http.Controller):
             for g in line_groups:
                 if g['product_id']:
                     top_products.append({
+                        'id': g['product_id'][0],
                         'product': g['product_id'][1],
                         'qty': g['qty'],
                         'ca': round(g['price_subtotal_incl'], 2),
@@ -162,6 +163,7 @@ class PosDashboardController(http.Controller):
                 if g['payment_method_id']:
                     pct = round((g['amount'] / total_payments * 100), 1) if total_payments else 0
                     payment_methods.append({
+                        'id': g['payment_method_id'][0],
                         'method': g['payment_method_id'][1],
                         'amount': round(g['amount'], 2),
                         'pct': pct,
