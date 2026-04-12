@@ -14,7 +14,12 @@ class PosDashboard extends Component {
         this.action = useService("action");
         this.state = useState({
             loading: true,
-            data: {},
+            data: {
+                daily_ca: [],
+                top_products: [],
+                ca_by_pos: [],
+                active_sessions: [],
+            },
             // Filtres dynamiques
             filters: {
                 chart_days: 7,
