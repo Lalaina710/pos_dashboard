@@ -162,23 +162,24 @@ class PosDashboardController(http.Controller):
                         'ca': round(g['price_subtotal_incl'], 2),
                     })
 
-        # --- Moyens de paiement ---
-        payment_methods = []
+        # --- CA par PdV ---
+        ca_by_pos = []
         if recent_order_ids:
-            payment_groups = PosPayment.read_group(
-                [('pos_order_id', 'in', recent_order_ids)],
-                fields=['payment_method_id', 'amount'],
-                groupby=['payment_method_id'],
-                orderby='amount desc',
+            pos_groups = PosOrder.read_group(
+                [('id', 'in', recent_order_ids)],
+                fields=['config_id', 'amount_total'],
+                groupby=['config_id'],
+                orderby='amount_total desc',
             )
-            total_payments = sum(g['amount'] for g in payment_groups)
-            for g in payment_groups:
-                if g['payment_method_id']:
-                    pct = round((g['amount'] / total_payments * 100), 1) if total_payments else 0
-                    payment_methods.append({
-                        'id': g['payment_method_id'][0],
-                        'method': g['payment_method_id'][1],
-                        'amount': round(g['amount'], 2),
+            total_ca_pos = sum(g['amount_total'] for g in pos_groups)
+            for g in pos_groups:
+                if g['config_id']:
+                    pct = round((g['amount_total'] / total_ca_pos * 100), 1) if total_ca_pos else 0
+                    ca_by_pos.append({
+                        'id': g['config_id'][0],
+                        'name': g['config_id'][1],
+                        'amount': round(g['amount_total'], 2),
+                        'count': g.get('__count', 0),
                         'pct': pct,
                     })
 
@@ -213,7 +214,7 @@ class PosDashboardController(http.Controller):
             'total_orders_recent': total_orders_recent,
             'total_ca_recent': round(total_ca_recent, 2),
             'top_products': top_products,
-            'payment_methods': payment_methods,
+            'ca_by_pos': ca_by_pos,
             'active_sessions': active_sessions,
             'config': config,
         }

@@ -103,7 +103,7 @@ class PosDashboard extends Component {
                 total_orders_recent: 0,
                 total_ca_recent: 0,
                 top_products: [],
-                payment_methods: [],
+                ca_by_pos: [],
                 active_sessions: [],
             };
         }

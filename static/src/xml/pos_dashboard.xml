@@ -186,30 +186,32 @@
                             </div>
                         </div>
 
-                        <!-- Moyens de paiement -->
+                        <!-- CA par PdV -->
                         <div class="db-section">
                             <div class="db-section-title">
-                                <i class="fa fa-credit-card me-2"/>Moyens de paiement
+                                <i class="fa fa-store me-2"/>CA par Point de Vente
                             </div>
-                            <t t-if="state.data.payment_methods.length">
+                            <t t-if="state.data.ca_by_pos and state.data.ca_by_pos.length">
                                 <table class="pos-table">
                                     <thead>
                                         <tr>
-                                            <th>Mode de paiement</th>
-                                            <th class="text-end">Montant</th>
+                                            <th>Point de Vente</th>
+                                            <th class="text-end">Commandes</th>
+                                            <th class="text-end">CA</th>
                                             <th class="text-end">% du total</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <t t-foreach="state.data.payment_methods" t-as="pm" t-key="pm_index">
+                                        <t t-foreach="state.data.ca_by_pos" t-as="pos" t-key="pos_index">
                                             <tr>
-                                                <td t-esc="pm.method"/>
-                                                <td class="text-end"><t t-esc="formatCurrency(pm.amount)"/></td>
+                                                <td t-esc="pos.name"/>
+                                                <td class="text-end" t-esc="pos.count"/>
+                                                <td class="text-end"><t t-esc="formatCurrency(pos.amount)"/></td>
                                                 <td class="text-end">
                                                     <div class="pct-bar-container">
-                                                        <div class="pct-bar-fill" t-attf-style="width: {{ pm.pct }}%"/>
+                                                        <div class="pct-bar-fill" t-attf-style="width: {{ pos.pct }}%"/>
                                                     </div>
-                                                    <span class="pct-label"><t t-esc="pm.pct"/>%</span>
+                                                    <span class="pct-label"><t t-esc="pos.pct"/>%</span>
                                                 </td>
                                             </tr>
                                         </t>
@@ -217,7 +219,7 @@
                                 </table>
                             </t>
                             <t t-else="">
-                                <div class="text-muted text-center p-3">Aucune donnée de paiement</div>
+                                <div class="text-muted text-center p-3">Aucune donnée PdV</div>
                             </t>
                         </div>
                     </div>
