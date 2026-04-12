@@ -125,11 +125,11 @@
             <t t-else="">
                 <!-- KPI Cards -->
                 <div class="kpi-row">
-                    <div class="kpi-card sessions" t-on-click="() => this.openSessions()">
+                    <div class="kpi-card sessions clickable" t-on-click="() => this.openSessions()">
                         <div class="kpi-value" t-esc="state.data.open_sessions_count || 0"/>
                         <div class="kpi-label">Sessions ouvertes</div>
                     </div>
-                    <div class="kpi-card orders_today" t-on-click="() => this.openOrdersToday()">
+                    <div class="kpi-card orders_today clickable" t-on-click="() => this.openOrdersToday()">
                         <div class="kpi-value" t-esc="state.data.orders_today_count || 0"/>
                         <div class="kpi-label">Commandes aujourd'hui</div>
                     </div>
@@ -141,15 +141,15 @@
                         <div class="kpi-value"><t t-esc="formatCurrency(state.data.avg_basket)"/></div>
                         <div class="kpi-label">Panier moyen</div>
                     </div>
-                    <div class="kpi-card ca_month" t-on-click="() => this.openMonthOrders()">
+                    <div class="kpi-card ca_month clickable" t-on-click="() => this.openMonthOrders()">
                         <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_month)"/></div>
                         <div class="kpi-label">CA ce mois</div>
                     </div>
-                    <div class="kpi-card orders_month" t-on-click="() => this.openMonthOrders()">
+                    <div class="kpi-card orders_month clickable" t-on-click="() => this.openMonthOrders()">
                         <div class="kpi-value" t-esc="state.data.orders_month_count || 0"/>
                         <div class="kpi-label">Commandes ce mois</div>
                     </div>
-                    <div class="kpi-card returns" t-on-click="() => this.openReturnsToday()">
+                    <div class="kpi-card returns clickable" t-on-click="() => this.openReturnsToday()">
                         <div class="kpi-value" t-esc="state.data.returns_today_count || 0"/>
                         <div class="kpi-label">Retours aujourd'hui</div>
                     </div>
