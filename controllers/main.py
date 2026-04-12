@@ -1,6 +1,7 @@
-from odoo import http
+# Modified by: odoo-frontend agent — 2026-04-13 — Fix timezone, perf graphique
+from odoo import fields, http
 from odoo.http import request
-from datetime import datetime, timedelta
+from datetime import timedelta
 from werkzeug.exceptions import Forbidden
 
 
@@ -49,8 +50,8 @@ class PosDashboardController(http.Controller):
         open_sessions_count = PosSession.search_count(session_domain)
 
         # Dates du jour
-        today_start = datetime.now().replace(hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
-        today_end = datetime.now().replace(hour=23, minute=59, second=59).strftime('%Y-%m-%d %H:%M:%S')
+        today_start = fields.Datetime.now().replace(hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
+        today_end = fields.Datetime.now().replace(hour=23, minute=59, second=59).strftime('%Y-%m-%d %H:%M:%S')
         today_domain = base_domain + [
             ('date_order', '>=', today_start),
             ('date_order', '<=', today_end),
@@ -70,7 +71,7 @@ class PosDashboardController(http.Controller):
         avg_basket = ca_today / orders_today_count if orders_today_count else 0
 
         # Dates du mois
-        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
+        month_start = fields.Datetime.now().replace(day=1, hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
         month_domain = base_domain + [
             ('date_order', '>=', month_start),
             ('date_order', '<=', today_end),
@@ -98,27 +99,38 @@ class PosDashboardController(http.Controller):
         )
         distinct_partners = len(set(o['partner_id'][0] for o in orders_with_partner if o['partner_id']))
 
-        # --- Graphique CA quotidien ---
+        # --- Graphique CA quotidien (optimisé read_group) ---
+        now = fields.Datetime.now()
+        date_chart_start = (now - timedelta(days=chart_days - 1)).strftime('%Y-%m-%d 00:00:00')
+        chart_domain = base_domain + [('date_order', '>=', date_chart_start)]
+        chart_groups = PosOrder.read_group(
+            chart_domain,
+            fields=['amount_total:sum', 'date_order'],
+            groupby=['date_order:day'],
+        )
+        chart_by_date = {}
+        for g in chart_groups:
+            day_key = g.get('date_order:day', '')
+            if day_key:
+                chart_by_date[day_key] = {
+                    'total': round(g.get('amount_total', 0), 2),
+                    'count': g.get('__count', 0),
+                }
         daily_ca = []
         for i in range(chart_days - 1, -1, -1):
-            day = datetime.now() - timedelta(days=i)
-            day_start = day.replace(hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
-            day_end = day.replace(hour=23, minute=59, second=59).strftime('%Y-%m-%d %H:%M:%S')
-            domain = base_domain + [
-                ('date_order', '>=', day_start),
-                ('date_order', '<=', day_end),
-            ]
-            day_orders = PosOrder.search_read(domain, fields=['amount_total'])
-            day_total = sum(o['amount_total'] for o in day_orders)
-            day_count = len(day_orders)
+            day = now - timedelta(days=i)
+            day_label = day.strftime('%d/%m')
+            # read_group retourne le jour formaté par Odoo (ex: "12 Apr 2026")
+            day_key_search = day.strftime('%d %b %Y')
+            data = chart_by_date.get(day_key_search, {})
             daily_ca.append({
-                'date': day.strftime('%d/%m'),
-                'total': round(day_total, 2),
-                'count': day_count,
+                'date': day_label,
+                'total': data.get('total', 0),
+                'count': data.get('count', 0),
             })
 
         # --- Statistiques période récente ---
-        date_n_ago = datetime.now() - timedelta(days=recent_days)
+        date_n_ago = fields.Datetime.now() - timedelta(days=recent_days)
         recent_domain = base_domain + date_domain + [
             ('date_order', '>=', date_n_ago.strftime('%Y-%m-%d %H:%M:%S')),
         ]

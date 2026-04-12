@@ -176,8 +176,11 @@ class PosDashboard extends Component {
     }
 
     formatQty(qty) {
-        if (!qty) return "0";
-        return Math.round(qty).toLocaleString("fr-FR");
+        if (!qty && qty !== 0) return "0,000";
+        return Number(qty).toLocaleString("fr-FR", {
+            minimumFractionDigits: 3,
+            maximumFractionDigits: 3,
+        });
     }
 
     getBarHeight(total) {
