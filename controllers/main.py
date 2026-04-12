@@ -110,8 +110,10 @@ class PosDashboardController(http.Controller):
         )
         chart_by_date = {}
         for g in chart_groups:
-            day_key = g.get('date_order:day', '')
-            if day_key:
+            rng = g.get('__range', {}).get('date_order:day', {})
+            from_str = rng.get('from', '')
+            if from_str:
+                day_key = from_str[:10]
                 chart_by_date[day_key] = {
                     'total': round(g.get('amount_total', 0), 2),
                     'count': g.get('__count', 0),
@@ -120,9 +122,8 @@ class PosDashboardController(http.Controller):
         for i in range(chart_days - 1, -1, -1):
             day = now - timedelta(days=i)
             day_label = day.strftime('%d/%m')
-            # read_group retourne le jour formaté par Odoo (ex: "12 Apr 2026")
-            day_key_search = day.strftime('%d %b %Y')
-            data = chart_by_date.get(day_key_search, {})
+            day_key = day.strftime('%Y-%m-%d')
+            data = chart_by_date.get(day_key, {})
             daily_ca.append({
                 'date': day_label,
                 'total': data.get('total', 0),
