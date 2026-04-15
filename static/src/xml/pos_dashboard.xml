@@ -195,6 +195,7 @@
                                 <table class="pos-table">
                                     <thead>
                                         <tr>
+                                            <th>Date</th>
                                             <th>Point de Vente</th>
                                             <th class="text-end">Commandes</th>
                                             <th class="text-end">CA</th>
@@ -204,6 +205,7 @@
                                     <tbody>
                                         <t t-foreach="state.data.ca_by_pos" t-as="pos" t-key="pos_index">
                                             <tr>
+                                                <td t-esc="pos.date"/>
                                                 <td t-esc="pos.name"/>
                                                 <td class="text-end" t-esc="pos.count"/>
                                                 <td class="text-end"><t t-esc="formatCurrency(pos.amount)"/></td>

@@ -180,22 +180,31 @@ class PosDashboardController(http.Controller):
                         'ca': round(g['price_subtotal_incl'], 2),
                     })
 
-        # --- CA par PdV ---
+        # --- CA par PdV (par jour) ---
         ca_by_pos = []
         if recent_order_ids:
             pos_groups = PosOrder.read_group(
                 [('id', 'in', recent_order_ids)],
-                fields=['config_id', 'amount_total'],
-                groupby=['config_id'],
-                orderby='amount_total desc',
+                fields=['config_id', 'amount_total', 'date_order'],
+                groupby=['date_order:day', 'config_id'],
+                orderby='date_order:day desc, amount_total desc',
+                lazy=False,
             )
             total_ca_pos = sum(g['amount_total'] for g in pos_groups)
             for g in pos_groups:
                 if g['config_id']:
                     pct = round((g['amount_total'] / total_ca_pos * 100), 1) if total_ca_pos else 0
+                    # Extract date from __range
+                    rng = g.get('__range', {}).get('date_order:day', {})
+                    from_str = rng.get('from', '')
+                    day_str = ''
+                    if from_str:
+                        utc_dt = datetime.strptime(from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=pytz.utc)
+                        day_str = utc_dt.astimezone(user_tz).strftime('%d/%m/%Y')
                     ca_by_pos.append({
                         'id': g['config_id'][0],
                         'name': g['config_id'][1],
+                        'date': day_str,
                         'amount': round(g['amount_total'], 2),
                         'count': g.get('__count', 0),
                         'pct': pct,
