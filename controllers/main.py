@@ -1,7 +1,8 @@
 # Modified by: odoo-frontend agent — 2026-04-13 — Fix timezone, perf graphique
 from odoo import fields, http
 from odoo.http import request
-from datetime import timedelta
+from datetime import timedelta, datetime
+import pytz
 from werkzeug.exceptions import Forbidden
 
 
@@ -24,6 +25,15 @@ class PosDashboardController(http.Controller):
         top_products_limit = filters.get('top_products_limit', 10)
         date_from = filters.get('date_from')
         date_to = filters.get('date_to')
+
+        # Convert date_from/date_to to UTC boundaries (user timezone)
+        _ftz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
+        if date_from and len(date_from) == 10:
+            _df_local = _ftz.localize(datetime.strptime(date_from, '%Y-%m-%d'))
+            date_from = _df_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        if date_to and len(date_to) == 10:
+            _dt_local = _ftz.localize(datetime.strptime(date_to, '%Y-%m-%d').replace(hour=23, minute=59, second=59))
+            date_to = _dt_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
         pos_config_id = filters.get('pos_config_id')
         user_id = filters.get('user_id')
 
@@ -39,7 +49,7 @@ class PosDashboardController(http.Controller):
         if date_from:
             date_domain.append(('date_order', '>=', date_from))
         if date_to:
-            date_domain.append(('date_order', '<=', date_to + ' 23:59:59'))
+            date_domain.append(('date_order', '<=', date_to))
 
         # --- KPI Cards ---
 
@@ -50,8 +60,12 @@ class PosDashboardController(http.Controller):
         open_sessions_count = PosSession.search_count(session_domain)
 
         # Dates du jour
-        today_start = fields.Datetime.now().replace(hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
-        today_end = fields.Datetime.now().replace(hour=23, minute=59, second=59).strftime('%Y-%m-%d %H:%M:%S')
+        _tz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
+        _now_local = fields.Datetime.now().replace(tzinfo=pytz.utc).astimezone(_tz)
+        _today_local_start = _now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        _today_local_end = _now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+        today_start = _today_local_start.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        today_end = _today_local_end.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
         today_domain = base_domain + [
             ('date_order', '>=', today_start),
             ('date_order', '<=', today_end),
@@ -71,7 +85,7 @@ class PosDashboardController(http.Controller):
         avg_basket = ca_today / orders_today_count if orders_today_count else 0
 
         # Dates du mois
-        month_start = fields.Datetime.now().replace(day=1, hour=0, minute=0, second=0).strftime('%Y-%m-%d %H:%M:%S')
+        month_start = _today_local_start.replace(day=1).astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
         month_domain = base_domain + [
             ('date_order', '>=', month_start),
             ('date_order', '<=', today_end),
@@ -108,19 +122,23 @@ class PosDashboardController(http.Controller):
             fields=['amount_total:sum', 'date_order'],
             groupby=['date_order:day'],
         )
+        user_tz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
         chart_by_date = {}
         for g in chart_groups:
             rng = g.get('__range', {}).get('date_order:day', {})
             from_str = rng.get('from', '')
             if from_str:
-                day_key = from_str[:10]
+                utc_dt = datetime.strptime(from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=pytz.utc)
+                local_dt = utc_dt.astimezone(user_tz)
+                day_key = local_dt.strftime('%Y-%m-%d')
                 chart_by_date[day_key] = {
                     'total': round(g.get('amount_total', 0), 2),
                     'count': g.get('__count', 0),
                 }
         daily_ca = []
+        now_local = now.replace(tzinfo=pytz.utc).astimezone(user_tz)
         for i in range(chart_days - 1, -1, -1):
-            day = now - timedelta(days=i)
+            day = now_local - timedelta(days=i)
             day_label = day.strftime('%d/%m')
             day_key = day.strftime('%Y-%m-%d')
             data = chart_by_date.get(day_key, {})
