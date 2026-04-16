@@ -197,22 +197,62 @@ class PosDashboardController(http.Controller):
             orderby='date_order:day desc, amount_total desc',
             lazy=False,
         )
+
+        # Pre-compute total qty sold per (day_key, config_id)
+        qty_by_key = {}
+        scope_orders = PosOrder.search_read(
+            ca_pos_domain,
+            fields=['id', 'date_order', 'config_id'],
+        )
+        scope_order_ids = [o['id'] for o in scope_orders]
+        qty_by_order = {}
+        if scope_order_ids:
+            line_qty_groups = PosOrderLine.read_group(
+                [('order_id', 'in', scope_order_ids)],
+                fields=['order_id', 'qty:sum'],
+                groupby=['order_id'],
+            )
+            for lg in line_qty_groups:
+                if lg.get('order_id'):
+                    qty_by_order[lg['order_id'][0]] = lg.get('qty', 0) or 0
+        for o in scope_orders:
+            if not o.get('config_id'):
+                continue
+            dt = o['date_order']
+            if isinstance(dt, str):
+                dt = datetime.strptime(dt, '%Y-%m-%d %H:%M:%S')
+            local_dt = pytz.utc.localize(dt).astimezone(user_tz) \
+                if dt.tzinfo is None else dt.astimezone(user_tz)
+            day_key = local_dt.strftime('%Y-%m-%d')
+            key = (day_key, o['config_id'][0])
+            qty_by_key[key] = qty_by_key.get(key, 0) + qty_by_order.get(o['id'], 0)
+
         total_ca_pos = sum(g['amount_total'] for g in pos_groups)
         for g in pos_groups:
             if g['config_id']:
-                pct = round((g['amount_total'] / total_ca_pos * 100), 1) if total_ca_pos else 0
+                amount = g['amount_total']
+                count = g.get('__count', 0)
+                pct = round((amount / total_ca_pos * 100), 1) if total_ca_pos else 0
+                avg_basket_pos = round(amount / count, 2) if count else 0
                 rng = g.get('__range', {}).get('date_order:day', {})
                 from_str = rng.get('from', '')
                 day_str = ''
+                day_key = ''
                 if from_str:
                     utc_dt = datetime.strptime(from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=pytz.utc)
-                    day_str = utc_dt.astimezone(user_tz).strftime('%d/%m/%Y')
+                    local_dt = utc_dt.astimezone(user_tz)
+                    day_str = local_dt.strftime('%d/%m/%Y')
+                    day_key = local_dt.strftime('%Y-%m-%d')
+                cfg_id = g['config_id'][0]
+                total_qty = qty_by_key.get((day_key, cfg_id), 0)
                 ca_by_pos.append({
-                    'id': g['config_id'][0],
+                    'id': cfg_id,
                     'name': g['config_id'][1],
                     'date': day_str,
-                    'amount': round(g['amount_total'], 2),
-                    'count': g.get('__count', 0),
+                    'amount': round(amount, 2),
+                    'count': count,
+                    'avg_basket': avg_basket_pos,
+                    'total_qty': round(total_qty, 3),
                     'pct': pct,
                 })
 

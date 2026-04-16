@@ -206,6 +206,8 @@
                                             <th>Date</th>
                                             <th>Point de Vente</th>
                                             <th class="text-end">Commandes</th>
+                                            <th class="text-end">Qte vendue</th>
+                                            <th class="text-end">Panier moyen</th>
                                             <th class="text-end">CA</th>
                                             <th class="text-end">% du total</th>
                                         </tr>
@@ -216,6 +218,8 @@
                                                 <td t-esc="pos.date"/>
                                                 <td t-esc="pos.name"/>
                                                 <td class="text-end" t-esc="pos.count"/>
+                                                <td class="text-end" t-esc="formatQty(pos.total_qty)"/>
+                                                <td class="text-end"><t t-esc="formatCurrency(pos.avg_basket)"/></td>
                                                 <td class="text-end"><t t-esc="formatCurrency(pos.amount)"/></td>
                                                 <td class="text-end">
                                                     <div class="pct-bar-container">
