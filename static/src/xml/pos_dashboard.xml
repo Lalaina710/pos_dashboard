@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <templates xml:space="preserve">
     <t t-name="pos_dashboard.PosDashboard">
-        <div class="pos_dashboard">
+        <div t-attf-class="pos_dashboard {{ state.darkMode ? 'dark-mode' : '' }}">
             <!-- Header avec contrôles -->
             <div class="db-header">
                 <div class="d-flex justify-content-between align-items-center">
@@ -36,6 +36,10 @@
                             <i class="fa fa-filter"/>
                             Filtres
                             <span class="filter-dot" t-if="hasActiveFilters()"/>
+                        </button>
+
+                        <button class="btn-theme" t-on-click="toggleTheme">
+                            <i t-attf-class="fa {{ state.darkMode ? 'fa-sun-o' : 'fa-moon-o' }}"/>
                         </button>
 
                         <button class="btn-refresh" t-on-click="() => this.loadData()">
@@ -131,7 +135,7 @@
                     </div>
                     <div class="kpi-card orders_today clickable" t-on-click="() => this.openOrdersToday()">
                         <div class="kpi-value" t-esc="state.data.orders_today_count || 0"/>
-                        <div class="kpi-label">Commandes aujourd'hui</div>
+                        <div class="kpi-label">Cmd aujourd'hui</div>
                     </div>
                     <div class="kpi-card ca_today">
                         <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_today)"/></div>
@@ -147,11 +151,11 @@
                     </div>
                     <div class="kpi-card orders_month clickable" t-on-click="() => this.openMonthOrders()">
                         <div class="kpi-value" t-esc="state.data.orders_month_count || 0"/>
-                        <div class="kpi-label">Commandes ce mois</div>
+                        <div class="kpi-label">Cmd ce mois</div>
                     </div>
                     <div class="kpi-card returns clickable" t-on-click="() => this.openReturnsToday()">
                         <div class="kpi-value" t-esc="state.data.returns_today_count || 0"/>
-                        <div class="kpi-label">Retours aujourd'hui</div>
+                        <div class="kpi-label">Retours</div>
                     </div>
                     <div class="kpi-card clients">
                         <div class="kpi-value" t-esc="state.data.distinct_partners || 0"/>
@@ -160,13 +164,13 @@
                 </div>
 
                 <div class="db-columns">
-                    <!-- Colonne gauche : Graphique CA + Moyens de paiement -->
+                    <!-- Colonne gauche : Graphique CA + CA par PdV -->
                     <div class="db-col">
                         <div class="db-section">
                             <div class="db-section-title">
                                 <i class="fa fa-bar-chart me-2"/>
-                                CA quotidien - <t t-esc="state.filters.chart_days"/> derniers jours
-                                <span class="float-end text-muted" style="font-size:0.85rem;">
+                                CA quotidien
+                                <span class="float-end section-meta">
                                     <t t-esc="state.filters.recent_days"/>j:
                                     <strong t-esc="state.data.total_orders_recent"/> cmd
                                     / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/>
@@ -189,10 +193,14 @@
                         <!-- CA par PdV -->
                         <div class="db-section">
                             <div class="db-section-title">
-                                <i class="fa fa-store me-2"/>CA par Point de Vente
+                                <i class="fa fa-shopping-bag me-2"/>CA par Point de Vente
+                                <span class="float-end section-meta">
+                                    <t t-esc="(state.data.ca_by_pos || []).length"/> ligne(s)
+                                </span>
                             </div>
                             <t t-if="state.data.ca_by_pos and state.data.ca_by_pos.length">
-                                <table class="pos-table">
+                              <div class="table-wrapper">
+                                <table class="mo-table">
                                     <thead>
                                         <tr>
                                             <th>Date</th>
@@ -219,9 +227,10 @@
                                         </t>
                                     </tbody>
                                 </table>
+                              </div>
                             </t>
                             <t t-else="">
-                                <div class="text-muted text-center p-3">Aucune donnée PdV</div>
+                                <div class="db-empty-state">Aucune donnee PdV</div>
                             </t>
                         </div>
                     </div>
@@ -231,17 +240,18 @@
                         <div class="db-section">
                             <div class="db-section-title">
                                 <i class="fa fa-trophy me-2"/>Top <t t-esc="state.filters.top_products_limit"/> produits
-                                <span class="float-end text-muted" style="font-size:0.85rem;">
-                                    <t t-esc="state.filters.recent_days"/> derniers jours
+                                <span class="float-end section-meta">
+                                    Periode : <t t-esc="state.filters.recent_days"/> jours
                                 </span>
                             </div>
                             <t t-if="state.data.top_products.length">
-                                <table class="pos-table">
+                              <div class="table-wrapper">
+                                <table class="mo-table">
                                     <thead>
                                         <tr>
                                             <th>#</th>
                                             <th>Produit</th>
-                                            <th class="text-end">Qté vendue</th>
+                                            <th class="text-end">Qte vendue</th>
                                             <th class="text-end">CA</th>
                                         </tr>
                                     </thead>
@@ -260,12 +270,10 @@
                                         </t>
                                     </tbody>
                                 </table>
+                              </div>
                             </t>
                             <t t-else="">
-                                <div class="text-muted text-center p-4">
-                                    <i class="fa fa-inbox fa-2x mb-2 d-block"/>
-                                    Aucune vente sur la période
-                                </div>
+                                <div class="db-empty-state">Aucune vente sur la periode</div>
                             </t>
                         </div>
 
@@ -273,12 +281,13 @@
                         <div class="db-section">
                             <div class="db-section-title">
                                 <i class="fa fa-desktop me-2"/>Sessions actives
-                                <span class="float-end text-muted" style="font-size:0.85rem;">
+                                <span class="float-end section-meta">
                                     <t t-esc="state.data.active_sessions.length"/> session(s)
                                 </span>
                             </div>
                             <t t-if="state.data.active_sessions.length">
-                                <table class="pos-table">
+                              <div class="table-wrapper">
+                                <table class="mo-table">
                                     <thead>
                                         <tr>
                                             <th>Session</th>
@@ -298,9 +307,10 @@
                                         </t>
                                     </tbody>
                                 </table>
+                              </div>
                             </t>
                             <t t-else="">
-                                <div class="text-muted text-center p-3">
+                                <div class="db-empty-state">
                                     <i class="fa fa-power-off fa-2x mb-2 d-block"/>
                                     Aucune session ouverte
                                 </div>

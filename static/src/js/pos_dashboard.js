@@ -39,6 +39,8 @@ class PosDashboard extends Component {
             autoRefreshInterval: 0,
             // Dernière mise à jour
             lastUpdate: '',
+            // Dark mode
+            darkMode: localStorage.getItem('pos_dashboard_dark') === 'true',
         });
         this._refreshTimer = null;
 
@@ -133,6 +135,11 @@ class PosDashboard extends Component {
 
     applyFilters() {
         this.loadData();
+    }
+
+    toggleTheme() {
+        this.state.darkMode = !this.state.darkMode;
+        localStorage.setItem('pos_dashboard_dark', this.state.darkMode);
     }
 
     resetFilters() {
