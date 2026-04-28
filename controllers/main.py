@@ -15,7 +15,6 @@ class PosDashboardController(http.Controller):
 
         PosOrder = request.env['pos.order']
         PosSession = request.env['pos.session']
-        PosPayment = request.env['pos.payment']
         PosOrderLine = request.env['pos.order.line']
 
         # Récupérer les paramètres dynamiques (filtres du frontend)
@@ -100,6 +99,18 @@ class PosDashboardController(http.Controller):
 
         # 6. Commandes ce mois
         orders_month_count = len(orders_month)
+
+        # 6b. Quantite totale ce mois (somme qty sur les memes orders que ca_month)
+        month_order_ids = [o['id'] for o in orders_month]
+        if month_order_ids:
+            qty_month_groups = PosOrderLine.read_group(
+                [('order_id', 'in', month_order_ids)],
+                fields=['qty:sum'],
+                groupby=[],
+            )
+            qty_month = qty_month_groups[0].get('qty', 0) if qty_month_groups else 0
+        else:
+            qty_month = 0
 
         # 7. Retours aujourd'hui
         returns_today_count = PosOrder.search_count(
@@ -280,6 +291,7 @@ class PosDashboardController(http.Controller):
             'ca_today': round(ca_today, 2),
             'avg_basket': round(avg_basket, 2),
             'ca_month': round(ca_month, 2),
+            'qty_month': round(qty_month, 3),
             'orders_month_count': orders_month_count,
             'returns_today_count': returns_today_count,
             'distinct_partners': distinct_partners,

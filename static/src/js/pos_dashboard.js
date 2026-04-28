@@ -103,6 +103,7 @@ class PosDashboard extends Component {
                 ca_today: 0,
                 avg_basket: 0,
                 ca_month: 0,
+                qty_month: 0,
                 orders_month_count: 0,
                 returns_today_count: 0,
                 distinct_partners: 0,
@@ -192,6 +193,14 @@ class PosDashboard extends Component {
         return Number(qty).toLocaleString("fr-FR", {
             minimumFractionDigits: 3,
             maximumFractionDigits: 3,
+        });
+    }
+
+    formatQtyMonth(qty) {
+        if (!qty && qty !== 0) return "0";
+        return Number(qty).toLocaleString("fr-FR", {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2,
         });
     }
 

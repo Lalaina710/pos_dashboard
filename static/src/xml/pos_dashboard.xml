@@ -149,6 +149,12 @@
                         <div class="kpi-value"><t t-esc="formatCurrency(state.data.ca_month)"/></div>
                         <div class="kpi-label">CA ce mois</div>
                     </div>
+                    <div class="kpi-card qty_month">
+                        <div class="kpi-value">
+                            <t t-esc="formatQtyMonth(state.data.qty_month)"/> kg
+                        </div>
+                        <div class="kpi-label"><i class="fa fa-balance-scale me-1"/>Quantité du mois</div>
+                    </div>
                     <div class="kpi-card orders_month clickable" t-on-click="() => this.openMonthOrders()">
                         <div class="kpi-value" t-esc="state.data.orders_month_count || 0"/>
                         <div class="kpi-label">Cmd ce mois</div>
