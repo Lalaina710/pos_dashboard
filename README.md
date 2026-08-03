@@ -242,14 +242,82 @@ pos_dashboard/
   "returns_today_count": 1,
   "distinct_partners": 28,
   "daily_ca": [{"date": "27/03", "total": 1850.00, "count": 12}],
+  "chart_period": "du 01/03/2026 au 30/06/2026 · par semaine",
   "total_orders_recent": 245,
   "total_ca_recent": 67800.00,
-  "top_products": [{"product": "Produit A", "qty": 150, "ca": 4500.00}],
+  "top_products": [{"id": 42, "product": "Produit A", "qty": 150, "ca": 4500.00, "top_pos": "PdV Ankorondrano", "top_pos_share": 62.0}],
+  "top_products_period": "du 01/03/2026 au 31/03/2026",
   "payment_methods": [{"method": "Especes", "amount": 35000.00, "pct": 52.3}],
   "active_sessions": [{"name": "POS/001", "user_id": [2, "Admin"], "config_id": [1, "Magasin Principal"], "start_at": "2026-04-03 08:00:00"}],
   "config": {"chart_days": 7, "recent_days": 30, "top_products_limit": 10, "auto_refresh_interval": 0}
 }
 ```
+
+**Contrat `top_products`** — consomme par `pos_dashboard` (OWL) ET par
+`direction_dashboard` (page standalone, onglet PdV) via la route proxy
+`/direction/data`. Toute modification de ces cles est une rupture inter-modules :
+
+| Cle | Type | Remarque |
+|---|---|---|
+| `id` | int | id `product.product` |
+| `product` | str | nom affiche |
+| `qty` | float | qte nette de la periode (retours deduits) |
+| `ca` | float | CA TTC |
+| `top_pos` | str | PdV dominant ; `''` si indeterminable ou PdV non visible par l'utilisateur |
+| `top_pos_share` | float | part en % de `qty` ; `0` si `top_pos` vide. **Peut depasser 100** quand un autre PdV est en retour net sur la periode — valeur non plafonnee, signal d'anomalie |
+
+**Cles de periode** — a afficher telles quelles, ne JAMAIS les recalculer cote
+frontend : un `date_from` fourni remplace la fenetre glissante par defaut, et un
+`date_to` seul deplace la fin de fenetre. Les deux libelles sortent du meme
+helper serveur (`_period_label`), mais restent deux valeurs distinctes car sans
+filtre date les fenetres par defaut different (`chart_days` vs `recent_days`).
+
+| Cle | Couvre |
+|---|---|
+| `chart_period` | `daily_ca` — suffixee ` · par semaine` / ` · par mois` selon la granularite |
+| `top_products_period` | `top_products`, `total_orders_recent`, `total_ca_recent` |
+| `ca_by_pos_period` | `ca_by_pos` (fenetre par defaut : 1 jour, ancree sur la fin de fenetre) |
+
+Les trois portent le suffixe ` · limité à 12 mois` quand `date_from` a ete
+ramene au plafond d'etendue (366 jours). Ce plafond protege le SQL : sans lui,
+un `date_from` a 1970 fait travailler tout l'aval sur l'historique complet.
+
+**Granularite du graphique** — `daily_ca` garde toujours la forme
+`{date, total, count}`, mais `date` n'est plus forcement un jour : etendue
+<= 31 j = jour (`%d/%m`), <= 182 j = semaine (`%d/%m` du lundi), au-dela = mois
+(`%m/%Y`). Nombre de points plafonne a 40 (les plus recents), valeur affichee
+telle quelle dans `chart_period` (` · 40 derniers points`).
+
+`top_products_period` porte en plus ` · N derniers jours de la période` quand la
+fenetre « recente » a ete bornee : ses ids de commandes sont materialises (ils
+alimentent le read_group des top produits et le SQL du PdV dominant), donc son
+etendue est plafonnee a `max(recent_days, 31)` jours **ancres sur la fin de la
+periode filtree**. Une periode passee rend toujours ses donnees ; seule son
+etendue est rognee.
+
+**Contrat `budget_vs_actual`** — bloc « CA realise vs budget du mois », alimente
+par le module optionnel `sopromer_pos_budget`. Consomme par les deux frontends,
+comme `top_products` : toute modification de ces cles est une rupture
+inter-modules.
+
+| Cle | Type | Remarque |
+|---|---|---|
+| `status` | str | `ok` / `missing` (module absent) / `forbidden` (module present, utilisateur non habilite) / `error` (present et habilite, mais illisible ou hors contrat) |
+| `message` | str | message a afficher tel quel ; `''` = il y a quelque chose a montrer |
+| `has_any_budget` | bool | au moins une ligne affichee porte un objectif saisi, **fut-il de 0** |
+| `rows[].has_budget` | bool | `True` ssi le PdV a une ligne `budget.pos.line` pour le mois, **independamment du montant** — un budget saisi a 0 donne `True` |
+| `rows[].pct_month` / `pct_todate` | float\|None | `None` des que le denominateur est nul, donc **aussi bien** pour un objectif absent que pour un objectif de 0 : c'est `has_budget` qui distingue les deux, jamais le pourcentage |
+| `total_budget_todate` | float | somme de la colonne `budget_todate` des lignes (et non re-prorata du total mensuel) |
+
+Le prorata compte les jours revolus **plus la fraction ecoulee du jour courant**
+dans le fuseau de l'utilisateur : le 3 a 09 h il vaut 2,4/31, pas 3/31.
+
+Ce bloc ne suit ni le filtre de date (il est defini par le calendrier) ni le
+filtre caissier : le budget n'ayant aucune dimension caissier, le bloc est
+**neutralise** (`rows` vide, `status` `ok`, message explicatif) des que
+`user_id` est pose, sans quoi le realise d'un seul caissier serait compare au
+budget plein du PdV. Le comparatif M/M-1, lui, reste calcule sous filtre
+caissier : les deux mois subissent le meme filtre.
 
 ### Reponse de `/pos_dashboard/filters_data`
 

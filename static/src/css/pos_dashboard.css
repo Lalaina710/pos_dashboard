@@ -22,6 +22,8 @@
     --radius-sm: 8px;
     --primary: #714B67;
     --primary-soft: rgba(113,75,103,0.08);
+    --share-bg: rgba(113,75,103,0.10);
+    --share-text: #5c3d54;
     --green: #10b981;
     --green-bg: #ecfdf5;
     --green-text: #065f46;
@@ -38,6 +40,10 @@
     --cyan: #06b6d4;
     --gray: #6b7280;
     --bar-gradient: linear-gradient(180deg, #714B67 0%, #a16b95 100%);
+    /* Serie de reference des graphiques groupes (mois precedent, budget) :
+       neutre et hachuree, pour se distinguer autrement que par la couleur. */
+    --cmp-ref: #9aa3b2;
+    --cmp-ref-soft: #c7cdd8;
     --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
 }
 
@@ -56,6 +62,8 @@
     --shadow: 0 1px 3px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.15);
     --shadow-lg: 0 4px 24px rgba(0,0,0,0.3);
     --primary-soft: rgba(161,107,149,0.15);
+    --share-bg: rgba(161,107,149,0.18);
+    --share-text: #dcbcd2;
     --green-bg: rgba(16,185,129,0.12);
     --green-text: #6ee7b7;
     --orange-bg: rgba(245,158,11,0.12);
@@ -65,6 +73,8 @@
     --blue-bg: rgba(59,130,246,0.12);
     --blue-text: #93c5fd;
     --bar-gradient: linear-gradient(180deg, #a16b95 0%, #714B67 100%);
+    --cmp-ref: #64748b;
+    --cmp-ref-soft: #475569;
 }
 
 /* === Container === */
@@ -291,6 +301,22 @@
     grid-template-columns: 1fr 1fr;
     gap: 20px;
 }
+/* Grille par LIGNES : les sections sont les items de la grille directement,
+   sans colonne intermediaire, ce qui permet de donner toute la largeur a un
+   bloc precis via .span-2. Se combine avec .db-columns, dont elle reprend les
+   colonnes et le passage a une seule colonne sous 1024px. */
+/* Modified by: odoo-frontend agent — 2026-08-01 */
+.pos_dashboard .db-rows { align-items: start; }
+/* min-width : un item de grille a min-width:auto, donc un minimum egal a son
+   min-content. Sans cette ligne, le tableau le plus large (CA par PdV, 7
+   colonnes de nombres que fr-FR rend insecables) repousserait sa piste et
+   mettrait toute la page en scroll horizontal. Meme protection que le
+   .db-col { min-width: 0 } de direction_dashboard. */
+.pos_dashboard .db-rows > .db-section {
+    min-width: 0;
+    margin-bottom: 0;
+}
+.pos_dashboard .db-rows > .db-section.span-2 { grid-column: 1 / -1; }
 .pos_dashboard .db-section {
     background: var(--card);
     border-radius: var(--radius);
@@ -365,12 +391,55 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* === Top produits : largeurs calees sur le contenu === */
+/* Modified by: odoo-frontend agent — 2026-08-02 */
+/* Transposition des regles #table-pos-products de direction_dashboard, que ce
+   widget n'avait jamais recues : le tableau prenait 100 % de sa carte, et dans
+   le backend Odoo (barre laterale) la demi-colonne est plus etroite qu'a
+   /direction — a 1280px la colonne "PdV principal" sortait de son conteneur
+   (40px de debordement, badges de part coupes).
+   width:1% en table-layout auto = colonne ramenee a son contenu ; tout le reste
+   de la largeur va a la colonne Produit.
+   ATTENTION : ces positions suivent l'ordre des <th> du template
+   (1 # | 2 Produit | 3 Qte | 4 CA | 5 PdV principal). Toute colonne ajoutee ou
+   retiree la-bas doit etre repercutee ici, sinon les largeurs glissent. */
+.pos_dashboard .top-products-table { max-width: 760px; }
+.pos_dashboard .top-products-table th:nth-child(1),
+.pos_dashboard .top-products-table td:nth-child(1),
+.pos_dashboard .top-products-table th:nth-child(3),
+.pos_dashboard .top-products-table td:nth-child(3),
+.pos_dashboard .top-products-table th:nth-child(4),
+.pos_dashboard .top-products-table td:nth-child(4) {
+    width: 1%;
+    white-space: nowrap;
+}
+/* Colonne 5 : largeur calee sur le contenu, mais le retour a la ligne reste
+   gere par .top-pos-cell (nowrap en desktop, normal sous 768px). Le lui
+   reprendre ici ecraserait le relachement mobile par specificite. */
+.pos_dashboard .top-products-table th:nth-child(5),
+.pos_dashboard .top-products-table td:nth-child(5) { width: 1%; }
+/* Densite : 10 lignes obligatoires (top 10 demande par la direction), on gagne
+   en hauteur sur l'interligne, pas sur le nombre de lignes. Le bloc responsive
+   768px, plus bas dans ce fichier, resserre encore a 6px 8px. */
+.pos_dashboard .top-products-table th { padding: 8px 12px; }
+.pos_dashboard .top-products-table td { padding: 6px 12px; }
+
 /* === Chart === */
 .pos_dashboard .db-section:has(.chart-container) {
     max-height: none;
     overflow: visible;
 }
-.pos_dashboard .chart-container { position: relative; height: 220px; }
+/* overflow-x : au-dela d'une trentaine de barres, la largeur mini des groupes
+   (barre 36px + libelle) poussait TOUTE la page en scroll horizontal
+   (scrollWidth 3385 pour 1920 mesure a 60 barres). Le debordement est
+   desormais contenu dans la section, les libelles gardent leur largeur
+   naturelle donc restent lisibles. */
+.pos_dashboard .chart-container {
+    position: relative;
+    height: 220px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
 .pos_dashboard .bar-chart {
     display: flex;
     align-items: flex-end;
@@ -407,6 +476,203 @@
     white-space: nowrap;
     font-family: var(--mono);
 }
+
+/* === Graphiques groupes : comparatif M/M-1 et CA vs budget === */
+/* Modified by: odoo-frontend agent — 2026-07-31 */
+/* ATTENTION : bloc duplique dans le <style> inline de
+   direction_dashboard/controllers/main.py, qui rend les memes payloads
+   (compare_months, budget_vs_actual) dans une page standalone (pas de bundle
+   d'assets). Toute modif ici doit y etre repercutee, sinon les deux ecrans
+   derivent. */
+.pos_dashboard .cmp-summary { margin-bottom: 14px; }
+.pos_dashboard .cmp-figures {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 18px;
+}
+.pos_dashboard .cmp-fig {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+    min-width: 0;
+}
+.pos_dashboard .cmp-fig b {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--text);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+}
+.pos_dashboard .cmp-fig i {
+    font-style: normal;
+    font-size: 0.66rem;
+    font-weight: 700;
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.pos_dashboard .cmp-fig-cur b { color: var(--primary); }
+.pos_dashboard .cmp-fig-ref b { font-size: 0.88rem; color: var(--text-3); }
+/* Fleche / coche EN PLUS de la couleur : l'ecart ne doit pas se lire
+   uniquement au vert ou au rouge. */
+.pos_dashboard .cmp-delta {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    font-weight: 800;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.pos_dashboard .cmp-delta-up { background: var(--green-bg); color: var(--green-text); }
+.pos_dashboard .cmp-delta-down { background: var(--red-bg); color: var(--red-text); }
+.pos_dashboard .cmp-delta-na { background: var(--table-stripe); color: var(--text-3); }
+/* Neutre : l'avancement dans le budget du mois est une progression, pas un
+   verdict. Le vert et le rouge sont reserves au rythme, sinon toutes les
+   jauges seraient rouges le 3 du mois. */
+.pos_dashboard .cmp-delta-neutral { background: var(--primary-soft); color: var(--text-2); }
+.pos_dashboard .cmp-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 16px;
+    margin-top: 10px;
+    font-size: 0.7rem;
+    color: var(--text-3);
+}
+.pos_dashboard .cmp-legend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+}
+/* La note explique ce qui n'est PAS trace (jours non advenus, jours sans
+   equivalent, jour en cours partiel) : elle est longue par nature, on lui laisse
+   une base large et elle passe a la ligne plutot que d'ecraser la legende. */
+.pos_dashboard .cmp-note {
+    flex: 1 1 240px;
+    text-align: right;
+    font-style: italic;
+}
+.pos_dashboard .cmp-key {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+}
+.pos_dashboard .cmp-key-cur { background: var(--primary); }
+.pos_dashboard .cmp-key-prev {
+    background: repeating-linear-gradient(135deg,
+        var(--cmp-ref) 0 3px, var(--cmp-ref-soft) 3px 6px);
+}
+/* Le graphique de base fixe .bar a 36px de large et laisse justify-content
+   repartir : correct a 7-31 barres, intenable a 62 (31 jours x 2 series). Les
+   tranches groupees se partagent donc la largeur (flex-basis 0) et la barre est
+   un pourcentage de sa tranche. 196px de haut = 150 (barre) + le % au-dessus
+   du groupe budget + la date en dessous. */
+.pos_dashboard .cmp-chart {
+    height: 196px;
+    justify-content: center;
+    gap: 2px;
+}
+.pos_dashboard .cmp-chart .bar-group {
+    /* max-width : avec un filtre PdV actif le graphique budget ne contient
+       qu'UN groupe ; sans plafond ses deux barres se retrouvaient chacune
+       centree dans une moitie de section. */
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 110px;
+}
+.pos_dashboard .cmp-chart .cmp-bars {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2px;
+    width: 100%;
+}
+.pos_dashboard .cmp-chart .cmp-slot {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+}
+.pos_dashboard .cmp-chart .bar {
+    width: 72%;
+    max-width: 44px;
+    min-width: 2px;
+}
+.pos_dashboard .cmp-chart .bar.cmp-cur { background: var(--bar-gradient); }
+.pos_dashboard .cmp-chart .bar.cmp-prev {
+    background: repeating-linear-gradient(135deg,
+        var(--cmp-ref) 0 4px, var(--cmp-ref-soft) 4px 8px);
+}
+/* Nom de PdV : une categorie ne se saute pas comme une date, elle se tronque.
+   Le nom complet reste dans l'infobulle du groupe. */
+.pos_dashboard .cmp-chart .bar-label {
+    max-width: 100%;
+    min-height: 1.25em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Echelle de lecture : avec deux series, aucune valeur ne tient au-dessus des
+   barres. Le maximum donne l'ordre de grandeur, le detail exact est dans
+   l'infobulle de chaque groupe et dans la ligne de synthese. */
+.pos_dashboard .chart-container .cmp-scale {
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 0 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--text-3);
+    background: var(--card);
+    pointer-events: none;
+}
+
+/* === Jauge d'atteinte budget (une ligne par PdV) === */
+/* Modified by: odoo-frontend agent — 2026-08-02 */
+/* ATTENTION : bloc duplique dans le <style> inline de
+   direction_dashboard/controllers/main.py, qui rend le meme payload
+   budget_vs_actual dans une page standalone (pas de bundle d'assets). Toute
+   modif ici doit y etre repercutee, sinon les deux ecrans derivent. */
+.pos_dashboard .bud-cell { white-space: nowrap; }
+.pos_dashboard .bud-gauge {
+    display: inline-block;
+    width: 90px;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+/* Le remplissage est plafonne a 100 % cote JS (une jauge ne deborde pas de son
+   rail) ; le POURCENTAGE, lui, n'est pas plafonne — au-dela de l'objectif on
+   lit "104 %", en vert. Meme parti pris que le badge de part du Top produits,
+   volontairement non plafonne. */
+.pos_dashboard .bud-gauge-fill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+}
+.pos_dashboard .bud-pct {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 0.78rem;
+}
+/* La couleur ne porte jamais seule : le taux chiffre est ecrit a cote. */
+.pos_dashboard .bud-ok  { color: var(--green-text); }
+.pos_dashboard .bud-mid { color: var(--orange-text); }
+.pos_dashboard .bud-low { color: var(--red-text); }
+.pos_dashboard .bud-gauge-fill.bud-ok  { background: var(--green); }
+.pos_dashboard .bud-gauge-fill.bud-mid { background: var(--orange); }
+.pos_dashboard .bud-gauge-fill.bud-low { background: var(--red); }
 
 /* === Rank badge === */
 .pos_dashboard .rank-badge {
@@ -450,6 +716,51 @@
     font-family: var(--mono);
 }
 
+/* === PdV principal (top produits) === */
+/* Modified by: odoo-frontend agent — 2026-07-28 — Colonne PdV principal top produits */
+/* ATTENTION : ces regles (.share-badge / .share-anomaly / .top-pos-* / .cell-muted)
+   sont dupliquees dans le <style> inline de direction_dashboard/controllers/main.py,
+   qui rend le meme payload top_products dans une page standalone (pas de bundle
+   d'assets). Toute modif ici doit y etre repercutee, sinon les deux rendus derivent. */
+.pos_dashboard .top-pos-cell {
+    white-space: nowrap;
+}
+.pos_dashboard .top-pos-name {
+    color: var(--text-2);
+}
+.pos_dashboard .share-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 20px;
+    background: var(--share-bg);
+    color: var(--share-text);
+    font-size: 0.7rem;
+    font-weight: 700;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+}
+.pos_dashboard .share-badge.share-anomaly {
+    background: var(--red-bg);
+    color: var(--red-text);
+    cursor: help;
+}
+.pos_dashboard .cell-muted {
+    color: var(--text-3);
+}
+
+/* === Erreur de chargement (distincte d'une periode sans vente) === */
+.pos_dashboard .db-load-error {
+    text-align: center;
+    padding: 40px 24px;
+    margin: 24px 0;
+    background: var(--red-bg);
+    color: var(--red-text);
+    border-radius: var(--radius);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
 /* === Empty state === */
 .pos_dashboard .db-empty-state {
     text-align: center;
@@ -489,6 +800,14 @@
     .pos_dashboard .db-controls { flex-wrap: wrap; }
     .pos_dashboard .mo-table { font-size: 0.75rem; }
     .pos_dashboard .mo-table th, .pos_dashboard .mo-table td { padding: 6px 8px; }
+    .pos_dashboard .top-pos-cell { white-space: normal; }
+    .pos_dashboard .share-badge { margin-left: 4px; padding: 1px 6px; }
+    /* 31 tranches x 2 series : sous 768px il ne reste qu'une dizaine de pixels
+       par groupe. On ne garde qu'un jour sur dix (+ les bornes). visibility et
+       non display : le libelle continue de reserver sa hauteur, sinon les
+       groupes concernes descendraient plus bas que leurs voisins. */
+    .pos_dashboard .cmp-chart .cmp-tick-minor { visibility: hidden; }
+    .pos_dashboard .bud-gauge { width: 54px; margin-right: 5px; }
 }
 @media (max-width: 480px) {
     .pos_dashboard { padding: 8px; }
@@ -504,6 +823,12 @@
     .pos_dashboard .bar-chart { height: 130px; }
     .pos_dashboard .bar { width: 14px; }
     .pos_dashboard .bar-value { display: none; }
+    /* Les hauteurs de barre des graphiques groupes sont calculees en px sur une
+       base de 150 : les rabaisser ici couperait les barres hautes. On redonne
+       donc au conteneur groupe sa hauteur, ces deux regles venant apres celles
+       du bloc principal (meme specificite, ordre du fichier). */
+    .pos_dashboard .chart-container-cmp { height: 220px; }
+    .pos_dashboard .cmp-chart { height: 196px; }
     .pos_dashboard .db-section-title { font-size: 0.82rem; }
 }
 

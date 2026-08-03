@@ -1,6 +1,6 @@
 {
     'name': 'Tableau de bord Point de Vente',
-    'version': '18.0.2.2.1',
+    'version': '18.0.2.10.3',
     'category': 'Point of Sale',
     'summary': 'Dashboard POS dynamique avec KPI, filtres et configuration',
     'description': 'Tableau de bord interactif pour le suivi du Point de Vente avec filtres dynamiques, rafraîchissement auto et configuration.',

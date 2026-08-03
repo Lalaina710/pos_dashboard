@@ -1,12 +1,193 @@
 # Modified by: odoo-frontend agent — 2026-04-13 — Fix timezone, perf graphique
+# Modified by: odoo-frontend agent — 2026-07-28 — Colonne PdV principal top produits
+# Modified by: odoo-frontend agent — 2026-07-28 — Corrections QA/secu : bornes filtres
+#   client, double borne basse periode, denominateur part PdV
+# Modified by: odoo-frontend agent — 2026-07-31 — Comparatif M/M-1 + CA vs budget
+# Modified by: odoo-frontend agent — 2026-08-01 — Contrat budget fige + rythme
+# Modified by: odoo-backend agent — 2026-08-03 — Corrections revue code du lot
+#   budget : statut 'forbidden' (bascule ACL), budget a 0 discernable d'un
+#   budget absent, borne volumetrique de la fenetre recente, neutralisation du
+#   bloc budget sous filtre caissier, rythme intra-journalier, total a date
 from odoo import fields, http
+from odoo.exceptions import AccessError
 from odoo.http import request
 from datetime import timedelta, datetime
+import calendar
+import logging
 import pytz
 from werkzeug.exceptions import Forbidden
 
+_logger = logging.getLogger(__name__)
+
+# Libelles de mois : le dashboard est monolingue francais (tous les autres
+# libelles de ce controleur le sont deja). Une dependance a babel/format_date
+# ferait dependre le rendu de la langue de l'utilisateur, alors que les deux
+# frontends qui consomment ce payload sont ecrits en dur en francais.
+_MONTHS_FR = (
+    'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
+)
+
+
+def _month_label(day):
+    """'2026-07-01' -> 'juillet 2026'."""
+    return '%s %d' % (_MONTHS_FR[day.month - 1], day.year)
+
 
 class PosDashboardController(http.Controller):
+
+    @staticmethod
+    def _bounded_int(value, default, minimum, maximum):
+        """Borne un entier issu du payload client.
+
+        Le frontend envoie ces valeurs telles quelles : sans borne, une valeur
+        non numerique fait une 500 (timedelta(days='abc')) et une valeur enorme
+        fait exploser la taille des requetes (DoS worker par un utilisateur
+        authentifie). Les bornes sont larges : elles couvrent toutes les options
+        de l'UI et toute valeur raisonnable de pos.dashboard.config.
+        """
+        try:
+            value = int(value)
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError : json.loads de CPython accepte Infinity, et
+            # int(float('inf')) leve OverflowError, pas ValueError
+            return default
+        return min(max(value, minimum), maximum)
+
+    @staticmethod
+    def _period_label(start_local, end_local, has_end_filter, suffix=''):
+        """Libelle de periode — mecanisme unique pour tout l'ecran.
+
+        Toutes les sections filtrables (graphique, stats recentes, top produits)
+        derivent leur libelle d'ici : une seule regle, pas une source de verite
+        par section. Le suffixe porte la granularite / la troncature du graphique.
+        """
+        if has_end_filter:
+            label = 'du %s au %s' % (
+                start_local.strftime('%d/%m/%Y'), end_local.strftime('%d/%m/%Y'),
+            )
+        else:
+            label = "du %s à aujourd'hui" % start_local.strftime('%d/%m/%Y')
+        return (label + suffix) if suffix else label
+
+    # ------------------------------------------------------------------
+    # Budget PdV — POINT D'ANCRAGE UNIQUE vers le module sopromer_pos_budget
+    # Modified by: odoo-frontend agent — 2026-07-31
+    # Modified by: odoo-frontend agent — 2026-08-01 — contrat fige
+    # ------------------------------------------------------------------
+    # Contrat (sopromer_pos_budget/README.md, « Contrat d'acces pour le
+    # tableau de bord ») :
+    #     budget.pos.line._get_budget_map(date_from, date_to, config_ids=None)
+    #         -> {(config_id, date(AAAA, MM, 1)): float}
+    # Tout ce qui touche a ce module est confine ici : un seul endroit a
+    # corriger si le contrat bouge.
+    _BUDGET_MODEL = 'budget.pos.line'
+
+    @staticmethod
+    def _normalize_budget(raw, month_first):
+        """{(config_id, date(AAAA,MM,1)): montant} -> {config_id: montant}.
+
+        Renvoie None si la forme n'est pas celle du contrat : mieux vaut
+        afficher "budgets indisponibles" que des montants attribues au mauvais
+        PdV, ou un bloc vide qui se lirait "aucun budget saisi".
+
+        Le mois de la cle est un `date`, PAS une chaine : date(2026, 7, 1) et
+        '2026-07' n'ont ni la meme valeur ni le meme hash. Comparer a une
+        chaine ne ferait correspondre aucune cle et viderait le bloc SANS
+        lever d'erreur — d'ou le garde-fou sur les cles ignorees plus bas.
+        """
+        if not isinstance(raw, dict):
+            return None
+        out = {}
+        skipped = 0
+        for key, value in raw.items():
+            if not isinstance(key, (tuple, list)) or len(key) != 2:
+                return None
+            cfg_id, key_month = key[0], key[1]
+            if key_month != month_first:
+                # Une seule borne a ete demandee : un autre mois signale un
+                # changement de contrat, on ne l'agrege pas en silence.
+                skipped += 1
+                continue
+            try:
+                out[int(cfg_id)] = out.get(int(cfg_id), 0.0) + float(value or 0)
+            except (TypeError, ValueError):
+                return None
+        if raw and not out and skipped:
+            # Le module a renvoye des lignes, aucune ne correspond au mois
+            # demande : le type de la cle a change (date -> datetime, par
+            # exemple). Un mapping vide serait indiscernable de "rien de saisi".
+            _logger.warning(
+                "pos_dashboard : %s a renvoye %d cle(s) dont aucune pour %s "
+                "(type de cle mois : %s)", 'budget.pos.line', skipped,
+                month_first, type(next(iter(raw))[1]).__name__)
+            return None
+        return out
+
+    @classmethod
+    def _get_pos_budget(cls, month_first, config_ids=None):
+        """Budget de CA par PdV pour UN mois. Retourne (statut, mapping).
+
+        Statuts : 'missing' (module non installe), 'forbidden' (installe, mais
+        l'utilisateur n'a pas l'habilitation de lecture), 'error' (installe et
+        habilite, mais illisible ou hors contrat), 'ok' (mapping exploitable,
+        vide s'il n'y a aucun budget saisi). Le frontend rend un message
+        distinct pour chacun : "aucun budget saisi", "reserve a la direction"
+        et "budgets illisibles" ne veulent pas dire la meme chose pour la
+        direction.
+
+        config_ids : None = tous les PdV lisibles. Une LISTE VIDE veut dire
+        "aucun PdV" et renvoie {} — ne jamais passer [] pour dire "tous".
+
+        Aucune exception ne remonte : le dashboard PdV doit continuer de
+        fonctionner meme si le module de budget est absent ou casse.
+
+        Depuis sopromer_pos_budget 18.0.1.1.0, la lecture n'est plus donnee a
+        group_pos_dashboard_user mais au groupe dedie group_pos_budget_reader
+        (arbitrage direction : le budget n'est pas une donnee d'exploitation).
+        Un utilisateur du dashboard qui n'a pas ce groupe leve donc un
+        AccessError, qui est une DECISION D'HABILITATION et pas une panne :
+        il est attrape AVANT Exception, rendu comme 'forbidden', et n'est pas
+        logge en warning — le cas est nominal pour les ~39 responsables PdV, et
+        l'auto-refresh du dashboard noierait les logs a chaque tour.
+        """
+        env = request.env
+        if cls._BUDGET_MODEL not in env:
+            return 'missing', {}
+        try:
+            model = env[cls._BUDGET_MODEL]
+            # _normalize_month est le constructeur de cle OFFICIEL du module :
+            # c'est lui qui fixe le type exact du mois dans les cles renvoyees.
+            # Reconstruire cette cle a la main est le piege documente cote
+            # module — date_order groupe par mois donne un datetime, et
+            # datetime(2026,7,1) != date(2026,7,1) (hash different) : aucune
+            # cle ne correspondrait et le bloc s'afficherait vide, sans erreur.
+            month_key = model._normalize_month(month_first)
+            # Bornes identiques = ce seul mois (un budget est retenu des que
+            # son mois chevauche la periode).
+            raw = model._get_budget_map(
+                month_first, month_first, config_ids=config_ids)
+            # L'exploitation du retour est DANS le try : hors du try, la
+            # promesse "aucune exception ne remonte" ne couvrait pas
+            # _normalize_budget, qui itere et caste des donnees venues d'un
+            # module optionnel.
+            mapping = cls._normalize_budget(raw, month_key)
+        except AccessError:
+            _logger.debug(
+                "pos_dashboard : %s non lisible par %s (habilitation), bloc "
+                "budget masque", cls._BUDGET_MODEL, env.user.login)
+            return 'forbidden', {}
+        except Exception:
+            _logger.warning(
+                "pos_dashboard : lecture de %s impossible, budget ignore",
+                cls._BUDGET_MODEL, exc_info=True)
+            return 'error', {}
+        if mapping is None:
+            _logger.warning(
+                "pos_dashboard : retour de %s._get_budget_map non conforme au "
+                "contrat, budget ignore", cls._BUDGET_MODEL)
+            return 'error', {}
+        return 'ok', mapping
 
     @http.route('/pos_dashboard/data', type='json', auth='user')
     def get_dashboard_data(self, **kwargs):
@@ -19,22 +200,75 @@ class PosDashboardController(http.Controller):
 
         # Récupérer les paramètres dynamiques (filtres du frontend)
         filters = kwargs.get('filters', {})
-        chart_days = filters.get('chart_days', 7)
-        recent_days = filters.get('recent_days', 30)
-        top_products_limit = filters.get('top_products_limit', 10)
-        date_from = filters.get('date_from')
-        date_to = filters.get('date_to')
+        chart_days = self._bounded_int(filters.get('chart_days'), 7, 1, 90)
+        recent_days = self._bounded_int(filters.get('recent_days'), 30, 1, 365)
+        top_products_limit = self._bounded_int(filters.get('top_products_limit'), 10, 1, 200)
+        # Fuseau et instant de reference : calcules UNE fois pour toute la methode
+        user_tz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
+        now = fields.Datetime.now()
+        now_local = now.replace(tzinfo=pytz.utc).astimezone(user_tz)
 
-        # Convert date_from/date_to to UTC boundaries (user timezone)
-        _ftz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
-        if date_from and len(date_from) == 10:
-            _df_local = _ftz.localize(datetime.strptime(date_from, '%Y-%m-%d'))
-            date_from = _df_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
-        if date_to and len(date_to) == 10:
-            _dt_local = _ftz.localize(datetime.strptime(date_to, '%Y-%m-%d').replace(hour=23, minute=59, second=59))
-            date_to = _dt_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
-        pos_config_id = filters.get('pos_config_id')
-        user_id = filters.get('user_id')
+        # UNE seule representation des filtres date : ce qui n'a pas ete parse
+        # n'existe pas. Auparavant has_date_from portait sur la chaine brute
+        # tandis que le domaine ORM recevait cette meme chaine non parsee : un
+        # date_to='2026-03-31 23:59:59' force en JSON-RPC filtrait bien les
+        # commandes MAIS n'alimentait pas window_end_local, ramenant d'un coup
+        # les trois defauts corriges par ce lot (+ 500 possible au cast PG).
+        date_from = None
+        date_to = None
+        date_from_local_dt = None
+        date_to_local_dt = None
+        _raw_from = filters.get('date_from')
+        _raw_to = filters.get('date_to')
+        # isinstance avant len() : un date_from=123 leverait TypeError sur len(int)
+        # AVANT d'entrer dans le try, et une liste de 10 elements passerait le
+        # test de longueur pour casser dans strptime.
+        if isinstance(_raw_from, str) and len(_raw_from) == 10:
+            try:
+                date_from_local_dt = user_tz.localize(
+                    datetime.strptime(_raw_from, '%Y-%m-%d'))
+            except (ValueError, TypeError):
+                date_from_local_dt = None
+        if isinstance(_raw_to, str) and len(_raw_to) == 10:
+            try:
+                date_to_local_dt = user_tz.localize(
+                    datetime.strptime(_raw_to, '%Y-%m-%d').replace(
+                        hour=23, minute=59, second=59))
+            except (ValueError, TypeError):
+                date_to_local_dt = None
+
+        # Fin de fenetre commune a toutes les sections filtrables : date_to si
+        # fourni, sinon maintenant. Les fenetres glissantes par defaut s'ancrent
+        # dessus et JAMAIS sur now : sinon un date_to seul (sans date_from)
+        # donnerait une borne basse posterieure a la borne haute (ensemble vide).
+        window_end_local = date_to_local_dt or now_local
+
+        # Plafond d'etendue. Rendre la borne basse conditionnelle (fix periode
+        # passee) a supprime le seul garde-fou volumetrique : un date_from a
+        # 1970 ferait travailler search_read + search + read_group + le SQL brut
+        # sur tout l'historique. Le plafond de points borne le RENDU, pas le SQL.
+        max_span_days = 366
+        period_clamped = False
+        if date_from_local_dt:
+            _earliest = (window_end_local - timedelta(days=max_span_days)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            if date_from_local_dt < _earliest:
+                date_from_local_dt = _earliest
+                period_clamped = True
+        clamp_suffix = ' · limité à 12 mois' if period_clamped else ''
+
+        if date_from_local_dt:
+            date_from = date_from_local_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        if date_to_local_dt:
+            date_to = date_to_local_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        has_date_from = bool(date_from_local_dt)
+
+        # Coercition par _bounded_int : un dict ou une liste passes en id
+        # atterrissaient tels quels dans le domaine ORM (erreur psycopg2 -> 500).
+        # Une valeur non coercible retombe sur 0, donc filtre absent.
+        _pg_int_max = 2 ** 31 - 1
+        pos_config_id = self._bounded_int(filters.get('pos_config_id'), 0, 0, _pg_int_max)
+        user_id = self._bounded_int(filters.get('user_id'), 0, 0, _pg_int_max)
 
         # Construire le domaine de base à partir des filtres
         base_domain = []
@@ -43,7 +277,7 @@ class PosDashboardController(http.Controller):
         if user_id:
             base_domain.append(('user_id', '=', user_id))
 
-        # Domaine temporel pour les filtres date
+        # Domaine temporel — bati uniquement sur les dates reellement parsees
         date_domain = []
         if date_from:
             date_domain.append(('date_order', '>=', date_from))
@@ -58,11 +292,9 @@ class PosDashboardController(http.Controller):
             session_domain.append(('config_id', '=', pos_config_id))
         open_sessions_count = PosSession.search_count(session_domain)
 
-        # Dates du jour
-        _tz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
-        _now_local = fields.Datetime.now().replace(tzinfo=pytz.utc).astimezone(_tz)
-        _today_local_start = _now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        _today_local_end = _now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+        # Dates du jour (now_local calcule en tete de methode)
+        _today_local_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        _today_local_end = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
         today_start = _today_local_start.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
         today_end = _today_local_end.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
         today_domain = base_domain + [
@@ -124,55 +356,180 @@ class PosDashboardController(http.Controller):
         )
         distinct_partners = len(set(o['partner_id'][0] for o in orders_with_partner if o['partner_id']))
 
-        # --- Graphique CA quotidien (optimisé read_group) ---
-        now = fields.Datetime.now()
-        date_chart_start = (now - timedelta(days=chart_days - 1)).strftime('%Y-%m-%d 00:00:00')
-        chart_domain = base_domain + [('date_order', '>=', date_chart_start)]
+        # --- Graphique CA (granularite adaptative, nombre de points borne) ---
+        if has_date_from and date_from_local_dt:
+            chart_start_local = date_from_local_dt
+        else:
+            chart_start_local = (
+                window_end_local - timedelta(days=chart_days - 1)
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        chart_domain = base_domain + date_domain
+        if not has_date_from:
+            chart_domain += [(
+                'date_order', '>=',
+                chart_start_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            )]
+
+        # Une etendue de 6 mois ne se trace pas comme 7 jours : la granularite
+        # s'adapte pour que le nombre de points reste lisible et borne.
+        span_days = (window_end_local.date() - chart_start_local.date()).days + 1
+        if span_days <= 31:
+            granularity, gran_suffix = 'day', ''
+        elif span_days <= 182:
+            granularity, gran_suffix = 'week', ' · par semaine'
+        else:
+            granularity, gran_suffix = 'month', ' · par mois'
+
+        def _bucket_key(local_dt):
+            """Cle de regroupement, identique cote read_group et cote iteration."""
+            if granularity == 'day':
+                return local_dt.strftime('%Y-%m-%d')
+            if granularity == 'week':
+                # Normalise sur le lundi : les tranches d'Odoo sont espacees de 7
+                # jours, la normalisation reste injective quel que soit le
+                # premier jour de semaine configure
+                return (local_dt - timedelta(days=local_dt.weekday())).strftime('%Y-%m-%d')
+            return local_dt.strftime('%Y-%m')
+
         chart_groups = PosOrder.read_group(
             chart_domain,
             fields=['amount_total:sum', 'date_order'],
-            groupby=['date_order:day'],
+            groupby=['date_order:%s' % granularity],
         )
-        user_tz = pytz.timezone(request.env.user.tz or 'Indian/Antananarivo')
         chart_by_date = {}
         for g in chart_groups:
-            rng = g.get('__range', {}).get('date_order:day', {})
+            rng = g.get('__range', {}).get('date_order:%s' % granularity, {})
             from_str = rng.get('from', '')
             if from_str:
                 utc_dt = datetime.strptime(from_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=pytz.utc)
                 local_dt = utc_dt.astimezone(user_tz)
-                day_key = local_dt.strftime('%Y-%m-%d')
-                chart_by_date[day_key] = {
-                    'total': round(g.get('amount_total', 0), 2),
-                    'count': g.get('__count', 0),
-                }
+                bucket = chart_by_date.setdefault(
+                    _bucket_key(local_dt), {'total': 0, 'count': 0},
+                )
+                bucket['total'] = round(bucket['total'] + (g.get('amount_total', 0) or 0), 2)
+                bucket['count'] += g.get('__count', 0)
+
+        # Generation des tranches (les vides comprises : un jour sans vente doit
+        # rester visible comme une barre a zero)
+        # Iteration sur des dates nues : ajouter un timedelta a un datetime pytz
+        # peut deriver d'une heure au passage d'un changement d'heure et decaler
+        # une tranche. Madagascar n'a pas de DST, d'autres fuseaux si.
+        buckets = []
+        end_date = window_end_local.date()
+        if granularity == 'month':
+            cursor = chart_start_local.date().replace(day=1)
+            while cursor <= end_date:
+                buckets.append((cursor.strftime('%Y-%m'), cursor.strftime('%m/%Y')))
+                cursor = (cursor.replace(day=28) + timedelta(days=7)).replace(day=1)
+        else:
+            step = 7 if granularity == 'week' else 1
+            cursor = chart_start_local.date()
+            if granularity == 'week':
+                cursor = cursor - timedelta(days=cursor.weekday())
+            while cursor <= end_date:
+                buckets.append((_bucket_key(cursor), cursor.strftime('%d/%m')))
+                cursor = cursor + timedelta(days=step)
+
+        # Plafond dur, defense en profondeur uniquement. Depuis le clamp
+        # d'etendue a 366 j, le maximum REEL atteignable est 31 points (31 j en
+        # granularite jour) : 32-182 j passent en semaine (<= 27 points) et
+        # 183-367 j en mois (<= 14 : le clamp autorise 367 jours inclusifs, qui
+        # peuvent toucher 14 mois calendaires, ex 31/12/2025 -> 01/01/2027).
+        # C'est ce clamp qui regle la lisibilite a la source ; overflow-x cote
+        # CSS absorbe le residu.
+        max_points = 40
+        truncated = len(buckets) > max_points
+        if truncated:
+            buckets = buckets[-max_points:]
+
         daily_ca = []
-        now_local = now.replace(tzinfo=pytz.utc).astimezone(user_tz)
-        for i in range(chart_days - 1, -1, -1):
-            day = now_local - timedelta(days=i)
-            day_label = day.strftime('%d/%m')
-            day_key = day.strftime('%Y-%m-%d')
-            data = chart_by_date.get(day_key, {})
+        for key, label in buckets:
+            data = chart_by_date.get(key, {})
             daily_ca.append({
-                'date': day_label,
+                'date': label,
                 'total': data.get('total', 0),
                 'count': data.get('count', 0),
             })
 
+        chart_period = self._period_label(
+            chart_start_local, window_end_local, bool(date_to_local_dt),
+            suffix=gran_suffix + (
+                ' · %s derniers points' % max_points if truncated else ''
+            ) + clamp_suffix,
+        )
+
         # --- Statistiques période récente ---
-        date_n_ago = fields.Datetime.now() - timedelta(days=recent_days)
-        recent_domain = base_domain + date_domain + [
-            ('date_order', '>=', date_n_ago.strftime('%Y-%m-%d %H:%M:%S')),
-        ]
+        # Cette fenetre est la seule de l'ecran dont les ids de commandes sont
+        # MATERIALISES (search_read ci-dessous), puis reinjectes dans un
+        # read_group et dans le SQL brut du PdV dominant. Sa taille gouverne
+        # donc a elle seule la volumetrie de tout ce bloc : elle doit rester
+        # bornee, quelle que soit l'etendue demandee par les filtres.
+        recent_domain = base_domain + date_domain
+        # Etendue maximale de la fenetre. Plancher a 31 jours : avec le seul
+        # recent_days (defaut 30), un filtre sur un mois de 31 jours perdrait
+        # son premier jour et le libelle annoncerait "du 02/03", ce qui se lit
+        # comme un bug. Au-dela, c'est le reglage utilisateur qui commande,
+        # exactement comme sur l'ecran non filtre.
+        recent_span_days = max(recent_days, 31)
+        recent_truncated = False
+        if not has_date_from:
+            # date_domain porte deja une borne basse quand date_from est fourni.
+            # Les cumuler ANDait deux '>=' : la borne effective devenait le max des
+            # deux, et une periode passee (ex 01/03 -> 31/03 avec recent_days=30)
+            # donnait un ensemble vide silencieux, KPI du haut restant remplis.
+            # Normalise a minuit comme chart_start_local : sans ca le libelle
+            # annonce "du 28/06" pour une fenetre demarrant le 28/06 a 14h30.
+            # Consequence assumee : la fenetre passe de N x 24h glissantes a N
+            # jours calendaires (elargissement de quelques heures, jamais moins).
+            recent_start_local = (
+                window_end_local - timedelta(days=recent_days)
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
+            recent_domain += [(
+                'date_order', '>=',
+                recent_start_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            )]
+        else:
+            recent_start_local = date_from_local_dt
+            # Borne volumetrique restauree. Le point CRITIQUE est l'ancrage :
+            # cette borne se calcule sur window_end_local (fin de la periode
+            # filtree), JAMAIS sur now. C'est l'ancrage sur now qui produisait
+            # l'ecran vide silencieux corrige precedemment — pour une periode
+            # passee, "now - recent_days" tombe APRES la fin de la periode et
+            # ANDait un ensemble vide. Ancree sur la fin de fenetre, la borne
+            # est toujours a l'interieur de la periode : une periode passee
+            # rend ses donnees, seule son ETENDUE est rognee.
+            _recent_floor = (
+                window_end_local - timedelta(days=recent_span_days)
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
+            if recent_start_local < _recent_floor:
+                recent_start_local = _recent_floor
+                recent_truncated = True
+                recent_domain += [(
+                    'date_order', '>=',
+                    recent_start_local.astimezone(pytz.utc).strftime(
+                        '%Y-%m-%d %H:%M:%S'),
+                )]
+        # Compromis assume : on borne la FENETRE plutot que de supprimer la
+        # materialisation des ids (jointure sur la sous-requete du Query ORM).
+        # La liste d'ids est ce qui garantit que le read_group et le SQL brut
+        # d'en dessous ne voient que des commandes deja passees par les regles
+        # d'enregistrement de pos.order (cf. "NB ACL" plus bas) ; deplacer cette
+        # garantie dans du SQL compose changerait le perimetre de securite d'un
+        # bloc deja audite. La semantique du bloc ("statistiques periode
+        # recente", "top produits recents") autorise la borne, et le libelle
+        # de periode la rend visible a l'ecran.
+        # Un seul passage : search_read renvoie deja les ids, le PosOrder.search()
+        # qui suivait rejouait la meme requete complete pour rien
         recent_orders = PosOrder.search_read(
             recent_domain,
-            fields=['amount_total'],
+            fields=['id', 'amount_total'],
         )
         total_orders_recent = len(recent_orders)
         total_ca_recent = sum(o['amount_total'] for o in recent_orders)
 
         # --- Top produits ---
-        recent_order_ids = PosOrder.search(recent_domain).ids
+        recent_order_ids = [o['id'] for o in recent_orders]
         top_products = []
         if recent_order_ids:
             line_groups = PosOrderLine.read_group(
@@ -189,17 +546,117 @@ class PosDashboardController(http.Controller):
                         'product': g['product_id'][1],
                         'qty': g['qty'],
                         'ca': round(g['price_subtotal_incl'], 2),
+                        # PdV dominant (rempli plus bas, '' / 0 si indeterminable)
+                        'top_pos': '',
+                        'top_pos_share': 0.0,
                     })
 
+        # --- PdV principal par produit du top ---
+        # Modified by: odoo-frontend agent — 2026-07-28 — Colonne PdV principal top produits
+        # Une seule agregation produit x config sur EXACTEMENT les memes lignes que
+        # top_products (recent_order_ids).
+        # NB ACL : ces ids de commandes sont passes par l'ORM, donc par les regles
+        # de pos.order. Le raccourci "donc les lignes aussi" ne vaut que parce que
+        # pos_order_line.company_id est un related STOCKE de la commande : ne pas
+        # generaliser ce SQL a un modele dont les regles ne derivent pas du parent.
+        # pos.order.line n'a pas de config_id : read_group ne peut pas grouper par
+        # chemin relationnel, d'ou le SQL groupe unique (evite un N+1 par produit).
+        if top_products:
+            top_product_ids = [p['id'] for p in top_products]
+            request.env.flush_all()
+            request.env.cr.execute(
+                """
+                SELECT l.product_id, o.config_id, SUM(l.qty) AS qty
+                  FROM pos_order_line l
+                  JOIN pos_order o ON o.id = l.order_id
+                 WHERE l.order_id IN %s
+                   AND l.product_id IN %s
+                   AND o.config_id IS NOT NULL
+                 GROUP BY l.product_id, o.config_id
+                """,
+                (tuple(recent_order_ids), tuple(top_product_ids)),
+            )
+            qty_by_product = {}
+            seen_config_ids = set()
+            for product_id, cfg_id, qty in request.env.cr.fetchall():
+                qty_by_product.setdefault(product_id, []).append((cfg_id, float(qty or 0)))
+                seen_config_ids.add(cfg_id)
+            config_names = {}
+            if seen_config_ids:
+                # search_read : les regles d'enregistrement filtrent silencieusement
+                # (pas d'AccessError si un PdV n'est pas visible par l'utilisateur)
+                config_names = {
+                    c['id']: c['name']
+                    for c in request.env['pos.config'].search_read(
+                        [('id', 'in', list(seen_config_ids))], fields=['name'],
+                    )
+                }
+            for prod in top_products:
+                entries = qty_by_product.get(prod['id'], [])
+                if not entries:
+                    continue
+                # Denominateur = la qte AFFICHEE dans la colonne d'a cote, pas une
+                # somme recalculee depuis le SQL. Les deux coincident aujourd'hui,
+                # mais ancrer sur la valeur affichee rend structurel l'invariant
+                # "le % se rapporte au chiffre de la ligne" : si un filtre est un
+                # jour ajoute d'un seul cote, le % devient faux au lieu de mentir
+                # silencieusement. Le IS NOT NULL du SQL reste une garde defensive.
+                total_qty = prod['qty'] or 0
+                if total_qty <= 0:
+                    # Qte nette nulle ou negative (retours) : pas de PdV dominant
+                    continue
+                # Departage stable : plus grande qte, puis plus petit id de config
+                best_cfg_id, best_qty = max(entries, key=lambda e: (e[1], -e[0]))
+                if best_qty <= 0:
+                    continue
+                cfg_name = config_names.get(best_cfg_id, '')
+                if not cfg_name:
+                    # PdV filtre par les record rules : ne pas divulguer sa part,
+                    # le ratio de concentration est deja une information
+                    continue
+                prod['top_pos'] = cfg_name
+                # Pas de plafond a 100 : une part > 100 % signale qu'un autre PdV est
+                # en retour net sur la periode. C'est une anomalie que la direction
+                # doit voir, le frontend la met en evidence (badge + title).
+                prod['top_pos_share'] = round(best_qty / total_qty * 100, 1)
+
+        # Periode REELLEMENT couverte par top_products / stats recentes. Meme
+        # mecanisme que le graphique (_period_label), mais valeur distincte : sans
+        # filtre date les deux fenetres par defaut different (chart_days vs
+        # recent_days). Une cle unique mentirait sur l'ecran non filtre.
+        top_products_period = self._period_label(
+            recent_start_local, window_end_local, bool(date_to_local_dt),
+            suffix=clamp_suffix + (
+                ' · %d derniers jours de la période' % recent_span_days
+                if recent_truncated else ''
+            ),
+        )
+
         # --- CA par PdV (aujourd'hui par défaut, ou période filtrée) ---
+        # Meme regle que recent_domain : la fenetre par defaut (1 jour) s'ancre
+        # sur la fin de fenetre, jamais sur aujourd'hui. Sans borne basse, un
+        # date_to seul declenchait un search_read sur TOUT l'historique PdV,
+        # puis un read_group sur toutes leurs lignes, puis une boucle Python —
+        # atteignable en remplissant le seul champ "Date fin".
         ca_pos_domain = base_domain[:]
-        if date_domain:
+        if has_date_from:
             ca_pos_domain += date_domain
+            ca_pos_start_local = date_from_local_dt
         else:
-            ca_pos_domain += [
-                ('date_order', '>=', today_start),
-                ('date_order', '<=', today_end),
-            ]
+            ca_pos_start_local = window_end_local.replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            ca_pos_domain += [(
+                'date_order', '>=',
+                ca_pos_start_local.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            )]
+            ca_pos_domain += [(
+                'date_order', '<=',
+                date_to or today_end,
+            )]
+        ca_pos_period = self._period_label(
+            ca_pos_start_local, window_end_local, bool(date_to_local_dt),
+            suffix=clamp_suffix,
+        )
         ca_by_pos = []
         pos_groups = PosOrder.read_group(
             ca_pos_domain,
@@ -267,6 +724,340 @@ class PosDashboardController(http.Controller):
                     'pct': pct,
                 })
 
+        # --- Comparatif M/M-1 et CA vs budget ---
+        # Modified by: odoo-frontend agent — 2026-07-31
+        #
+        # Ces deux blocs IGNORENT volontairement les filtres de date : ils sont
+        # definis par le calendrier (mois de "aujourd'hui" et mois calendaire
+        # precedent), pas par la periode choisie. Les filtres PdV et caissier,
+        # eux, s'appliquent : ils sont portes par base_domain. Les libelles
+        # renvoyes au frontend le disent explicitement — un utilisateur qui
+        # filtre mars ne doit pas croire que ces blocs parlent de mars.
+        #
+        # UNE seule agregation sert les deux : un read_group (jour x PdV) sur
+        # la fenetre "1er du mois precedent -> fin de journee". Le comparatif
+        # s'obtient en sommant sur les PdV, le realise par PdV en sommant sur
+        # les jours du mois en cours. Deux read_group auraient rescanne deux
+        # fois pos_order, qui est la seule partie couteuse ici.
+        cur_month_first = now_local.date().replace(day=1)
+        prev_month_first = (cur_month_first - timedelta(days=1)).replace(day=1)
+        today_day = now_local.date().day
+        cur_month_days = calendar.monthrange(
+            cur_month_first.year, cur_month_first.month)[1]
+        prev_month_days = calendar.monthrange(
+            prev_month_first.year, prev_month_first.month)[1]
+
+        # localize() et non replace(tzinfo=...) : seul localize() choisit le bon
+        # decalage a une bascule d'heure d'ete. Madagascar n'en a pas, mais ce
+        # controleur suit le fuseau de l'utilisateur, pas celui du serveur.
+        cmp_start = user_tz.localize(
+            datetime.combine(prev_month_first, datetime.min.time())
+        ).astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+        cmp_groups = PosOrder.read_group(
+            base_domain + [
+                ('date_order', '>=', cmp_start),
+                ('date_order', '<=', today_end),
+            ],
+            fields=['config_id', 'amount_total', 'date_order'],
+            groupby=['date_order:day', 'config_id'],
+            lazy=False,
+        )
+        ca_by_local_day = {}
+        actual_by_config = {}
+        budget_config_names = {}
+        for g in cmp_groups:
+            rng = g.get('__range', {}).get('date_order:day', {})
+            from_str = rng.get('from', '')
+            if not from_str:
+                continue
+            local_day = datetime.strptime(
+                from_str, '%Y-%m-%d %H:%M:%S'
+            ).replace(tzinfo=pytz.utc).astimezone(user_tz).date()
+            amount = g.get('amount_total', 0) or 0
+            # += et non = : a une bascule d'heure, deux tranches UTC peuvent
+            # retomber sur la meme date locale (meme raison que le graphique).
+            ca_by_local_day[local_day] = ca_by_local_day.get(local_day, 0) + amount
+            if local_day >= cur_month_first and g.get('config_id'):
+                cfg_id = g['config_id'][0]
+                actual_by_config[cfg_id] = actual_by_config.get(cfg_id, 0) + amount
+                budget_config_names[cfg_id] = g['config_id'][1]
+
+        # Mois de longueurs differentes : l'axe couvre le plus long des deux.
+        # Une case sans equivalent vaut None, JAMAIS 0 :
+        #   - jour non encore advenu du mois en cours (13 -> 31 quand on est le 12),
+        #   - jour inexistant du mois precedent (31 quand il en compte 30).
+        # Un 0 se lirait "ce jour-la on n'a rien vendu", ce qui serait faux. Le
+        # frontend ne trace aucune barre pour une valeur nulle.
+        compare_days = []
+        for day_num in range(1, max(cur_month_days, prev_month_days) + 1):
+            current_val = None
+            if day_num <= cur_month_days and day_num <= today_day:
+                current_val = round(ca_by_local_day.get(
+                    cur_month_first.replace(day=day_num), 0), 2)
+            previous_val = None
+            if day_num <= prev_month_days:
+                previous_val = round(ca_by_local_day.get(
+                    prev_month_first.replace(day=day_num), 0), 2)
+            compare_days.append({
+                'day': day_num,
+                'current': current_val,
+                'previous': previous_val,
+            })
+
+        total_current = round(sum(
+            d['current'] for d in compare_days if d['current'] is not None), 2)
+        # Base de comparaison honnete : les MEMES jours du mois precedent.
+        # Comparer 12 jours de juillet aux 30 jours de juin afficherait un
+        # effondrement qui n'existe pas. Le total complet de M-1 reste renvoye
+        # a part, comme reference de fin de mois.
+        total_previous_same = round(sum(
+            d['previous'] for d in compare_days
+            if d['previous'] is not None and d['day'] <= today_day), 2)
+        total_previous_full = round(sum(
+            d['previous'] for d in compare_days if d['previous'] is not None), 2)
+        delta_pct = None
+        if total_previous_same:
+            delta_pct = round(
+                (total_current - total_previous_same) / total_previous_same * 100, 1)
+
+        compare_notes = []
+        if cur_month_days != prev_month_days:
+            compare_notes.append(
+                "les deux mois n'ont pas le même nombre de jours : "
+                "un jour sans équivalent n'est pas tracé")
+        if today_day < cur_month_days:
+            compare_notes.append(
+                "les jours non encore advenus du mois en cours ne sont pas tracés")
+        compare_notes.append("le jour en cours est partiel")
+
+        compare_months = {
+            'current_label': _month_label(cur_month_first),
+            'previous_label': _month_label(prev_month_first),
+            'days': compare_days,
+            'total_current': total_current,
+            'total_previous_same': total_previous_same,
+            'total_previous_full': total_previous_full,
+            'delta_pct': delta_pct,
+            'elapsed_days': today_day,
+            'current_month_days': cur_month_days,
+            'previous_month_days': prev_month_days,
+            # Libelle porteur de l'avertissement : ce bloc ne suit pas le filtre
+            # de date, il faut que ce soit lisible sans ouvrir la documentation.
+            'period_label': '%s vs %s · hors filtre de date' % (
+                _month_label(cur_month_first), _month_label(prev_month_first)),
+            'note': ' · '.join(compare_notes),
+        }
+
+        # --- CA realise vs budget du mois ---
+        # Le budget n'a AUCUNE dimension caissier : il est defini par point de
+        # vente. Or base_domain porte le filtre caissier et alimente cmp_groups,
+        # donc actual_by_config : avec « Caissier = X », le realise ne compte que
+        # les ventes de X, face a un budget reste plein PdV. Le taux d'atteinte
+        # s'effondre mecaniquement (de l'ordre de 8 % au lieu de 95 %), tous les
+        # PdV passent au rouge et le tri « qui decroche » ne classe plus que du
+        # bruit. On NEUTRALISE donc le bloc plutot que d'afficher une
+        # comparaison fausse — le message et le libelle de periode disent
+        # pourquoi, sinon l'absence de donnees se lirait comme une panne.
+        # Le comparatif M/M-1 ci-dessus n'est PAS concerne : les deux mois
+        # subissent le meme filtre, le rapport entre eux reste honnete.
+        budget_off_cashier = bool(user_id)
+        if budget_off_cashier:
+            # Statut 'ok' et non un 5e statut : le contrat n'en compte que
+            # quatre, et « rien a afficher + message » est deja la convention
+            # de ce bloc (cas "aucun budget saisi"). L'appel au module de
+            # budget est economise, il ne servirait a rien.
+            budget_status, budget_map = 'ok', {}
+            budget_ids = set()
+        else:
+            # config_ids : liste NON VIDE ou None. Passer [] demanderait "aucun
+            # PdV" au module de budget et renverrait {} — le bloc afficherait
+            # "aucun budget saisi" en permanence.
+            budget_status, budget_map = self._get_pos_budget(
+                cur_month_first, [pos_config_id] if pos_config_id else None)
+
+            budget_ids = set(actual_by_config) | set(budget_map)
+            if pos_config_id:
+                budget_ids &= {pos_config_id}
+        missing_names = [i for i in budget_ids if i not in budget_config_names]
+        if missing_names:
+            # search_read : les regles d'enregistrement filtrent silencieusement.
+            # Un PdV budgete mais invisible pour cet utilisateur n'apparaitra
+            # pas — c'est voulu, on ne divulgue pas son objectif de CA.
+            for cfg in request.env['pos.config'].search_read(
+                    [('id', 'in', missing_names)], fields=['name']):
+                budget_config_names[cfg['id']] = cfg['name']
+        # Le module ne prorate PAS : le montant renvoye est le budget PLEIN
+        # du mois. Comparer 12 jours de realise a un budget mensuel plein donne
+        # un taux d'atteinte de ~40 % qui ne veut rien dire et que la direction
+        # lirait comme une alerte — exactement le piege deja corrige sur le
+        # comparatif M-1. Le budget est donc PRORATISE en jours CALENDAIRES
+        # (les PdV ouvrent tous les jours ; des jours ouvres fausseraient le
+        # taux), et la regle de prorata est affichee a l'ecran : un taux
+        # d'atteinte dont on ignore la base est pire qu'inutile.
+        #
+        # Le jour en cours COURT, il n'est pas ecoule : le compter pour un jour
+        # plein (today_day / jours du mois) exigeait 3/31 du budget le 3 aout a
+        # 09 h alors que 2,4 jours seulement avaient couru, et une journee
+        # entiere des le 1er a 00 h 05. Tous les PdV etaient donc
+        # structurellement un jour en retard — badge rouge chaque matin. On
+        # compte les jours REVOLUS plus la fraction ecoulee du jour courant,
+        # dans le fuseau de l'utilisateur (now_local), pas celui du serveur.
+        # Le dernier jour a 23 h 59 le ratio vaut ~1, donc budget plein. Il peut
+        # en revanche valoir ~0 dans les premieres minutes du 1er du mois : ce
+        # n'est pas une division par zero, tous les denominateurs qui en
+        # derivent sont gardes explicitement (pourcentage a None).
+        elapsed_seconds = (
+            now_local.hour * 3600 + now_local.minute * 60 + now_local.second)
+        elapsed_days_frac = today_day - 1 + elapsed_seconds / 86400.0
+        pace_ratio = elapsed_days_frac / float(cur_month_days)
+        budget_rows = []
+        for cfg_id in budget_ids:
+            name = budget_config_names.get(cfg_id)
+            if not name:
+                continue
+            actual = round(actual_by_config.get(cfg_id, 0), 2)
+            # « Objectif saisi a 0 » et « aucun objectif saisi » donnaient tous
+            # deux un montant de 0 et un pourcentage a None : indiscernables
+            # cote frontend, qui affichait "Aucun budget saisi" sur un PdV dont
+            # l'objectif de 0 est justement une saisie volontaire (PdV ferme sur
+            # le mois — invariant protege cote module par
+            # test_zero_amount_allowed). Le contrat du module ABSENTE les mois
+            # non budgetes du mapping au lieu d'y mettre 0 : c'est exactement
+            # cette distinction que porte has_budget, et lui seul. Le 0 ci-
+            # dessous reste une valeur interne pour le cas "absent".
+            has_budget = cfg_id in budget_map
+            budget_month = round(budget_map.get(cfg_id, 0), 2)
+            budget_todate = round(budget_month * pace_ratio, 2)
+            budget_rows.append({
+                'id': cfg_id,
+                'name': name,
+                'actual': actual,
+                # Seul discriminant entre "objectif de 0" et "pas d'objectif" :
+                # les deux montants et les deux pourcentages sont identiques.
+                'has_budget': has_budget,
+                # Deux budgets, nommes sans ambiguite : celui de la periode
+                # ecoulee (base du taux d'atteinte) et celui du mois entier
+                # (l'objectif, qui ne bouge pas).
+                'budget_todate': budget_todate,
+                'budget_month': budget_month,
+                # None des que le denominateur est nul — objectif absent comme
+                # objectif saisi a 0. Un realise > 0 contre un objectif de 0 n'a
+                # pas de pourcentage fini, et 0/0 n'en a pas davantage : mieux
+                # vaut ne rien afficher qu'un infini ou un 0 % faux. C'est
+                # has_budget qui dit lequel des deux cas on regarde.
+                'pct_todate': round(
+                    actual / budget_todate * 100, 1) if budget_todate else None,
+                'pct_month': round(
+                    actual / budget_month * 100, 1) if budget_month else None,
+            })
+        budget_has_any = any(r['has_budget'] for r in budget_rows)
+        budget_total_actual = round(sum(r['actual'] for r in budget_rows), 2)
+        budget_total_month = round(sum(r['budget_month'] for r in budget_rows), 2)
+        # Somme de la COLONNE affichee, et non re-prorata du total mensuel :
+        # round(somme) et somme(arrondis) different, et "Budget a date" est
+        # affiche a cote de la colonne qu'il resume. Une synthese qui n'est pas
+        # la somme de sa colonne se lit comme une erreur de calcul.
+        budget_total_todate = round(sum(r['budget_todate'] for r in budget_rows), 2)
+        budget_total_pct_todate = round(
+            budget_total_actual / budget_total_todate * 100, 1
+        ) if budget_total_todate else None
+        budget_total_pct_month = round(
+            budget_total_actual / budget_total_month * 100, 1
+        ) if budget_total_month else None
+        # Tri par taux d'atteinte CROISSANT : les PdV qui decrochent en tete.
+        # Les autres blocs de l'ecran classent par montant decroissant ("qui
+        # pese le plus"), mais la question de celui-ci est "qui est en retard" —
+        # et comme la liste defile, son haut est la seule partie vue a coup sur.
+        # Les PdV sans budget n'ont pas de taux : ils ferment la liste sans en
+        # disparaitre. Ceux dont l'objectif saisi vaut 0 n'en ont pas davantage
+        # (denominateur nul) et les rejoignent en fin de liste : has_budget
+        # reste le seul moyen de les distinguer, y compris a l'affichage.
+        budget_rows.sort(key=lambda r: (
+            r['pct_todate'] is None, r['pct_todate'] or 0, -r['actual'], r['name'],
+        ))
+
+        # Message d'indisponibilite calcule ICI et non dans les frontends : les
+        # deux ecrans (widget OWL et page /direction) rendent le meme payload,
+        # une formulation par ecran finirait par diverger. Message vide = il y a
+        # quelque chose a afficher.
+        #
+        # « Aucun budget saisi » ne doit pas couvrir « aucun PdV visible » : des
+        # PdV budgetes peuvent avoir ete ecartes juste au-dessus par les regles
+        # d'enregistrement de pos.config (`if not name: continue`). L'ancien
+        # message designait alors la mauvaise cause et envoyait la direction
+        # verifier une saisie pourtant faite.
+        month_label_cur = _month_label(cur_month_first)
+        budgeted_hidden = bool(
+            (set(budget_map) & budget_ids) - {r['id'] for r in budget_rows})
+        if budget_off_cashier:
+            budget_message = ("Comparaison au budget désactivée : un filtre "
+                              "caissier est actif, or le budget est défini par "
+                              "point de vente, sans dimension caissier.")
+        elif budget_status == 'missing':
+            budget_message = ("Module budget non installé — aucun objectif "
+                              "de CA à comparer.")
+        elif budget_status == 'forbidden':
+            # Les lignes restent construites dans ce cas (le realise seul, aucun
+            # montant de budget) par coherence avec 'missing', et parce que rien
+            # n'y fuit. Le frontend actuel ne les exploite pas : il remplace tout
+            # le bloc par son rendu cadenas des que le statut vaut 'forbidden'.
+            # C'est donc du calcul mort cote serveur — assume, pas un oubli : le
+            # supprimer ferait dependre la forme du payload du rendu d'un
+            # frontend, alors que deux ecrans consomment ce meme payload.
+            budget_message = "Budgets réservés à la direction."
+        elif budget_status == 'error':
+            budget_message = ("Budgets indisponibles : le module est présent "
+                              "mais ses données n'ont pas pu être lues.")
+        elif budget_has_any:
+            budget_message = ''
+        elif budgeted_hidden:
+            budget_message = ("Aucun budget à afficher pour %s : les budgets "
+                              "saisis portent sur des points de vente auxquels "
+                              "vous n'avez pas accès." % month_label_cur)
+        else:
+            budget_message = "Aucun budget saisi pour %s." % month_label_cur
+
+        budget_vs_actual = {
+            'status': budget_status,
+            'message': budget_message,
+            'month_label': month_label_cur,
+            'rows': budget_rows,
+            # Vrai des qu'AU MOINS UNE ligne affichee porte un objectif saisi,
+            # fut-il de 0. Le frontend s'en sert pour choisir entre "afficher
+            # la colonne budget" et "afficher le message" — le total mensuel ne
+            # pouvait pas jouer ce role : un unique PdV budgete a 0 le laisse a
+            # 0 et faisait basculer tout le bloc sur "aucun budget saisi".
+            'has_any_budget': budget_has_any,
+            'total_count': len(budget_rows),
+            'total_actual': budget_total_actual,
+            'total_budget_todate': budget_total_todate,
+            'total_budget_month': budget_total_month,
+            'total_pct_todate': budget_total_pct_todate,
+            'total_pct_month': budget_total_pct_month,
+            'elapsed_days': today_day,
+            'month_days': cur_month_days,
+            # Deux choses a dire, parce que chaque jauge porte DEUX informations :
+            # le chiffre (avancement dans le budget du mois) et sa couleur
+            # (avance ou retard sur le budget proratise a date). Sans cette
+            # legende, un "40 %" en vert le 12 du mois se lirait comme une
+            # incoherence. La regle de prorata y figure : un taux dont on ignore
+            # la base est pire qu'inutile. Meme formulation que le comparatif
+            # pour le jour partiel — les deux blocs se lisent l'un apres l'autre.
+            'note': "le pourcentage est la part du budget du mois déjà "
+                    "réalisée ; sa couleur indique l'avance ou le retard sur le "
+                    "budget proratisé à %s/%d jours écoulés · le jour en cours "
+                    "est compté au prorata de l'heure"
+                    % (('%.1f' % elapsed_days_frac).replace('.', ','),
+                       cur_month_days),
+            # Le libelle porte les DEUX filtres que ce bloc ne suit pas : la
+            # date (par construction) et le caissier (par neutralisation).
+            'period_label': '%s · hors filtre de date%s' % (
+                month_label_cur,
+                ' · non comparable avec un filtre caissier'
+                if budget_off_cashier else ''),
+        }
+
         # --- Sessions actives ---
         active_sessions = PosSession.search_read(
             session_domain,
@@ -296,10 +1087,15 @@ class PosDashboardController(http.Controller):
             'returns_today_count': returns_today_count,
             'distinct_partners': distinct_partners,
             'daily_ca': daily_ca,
+            'chart_period': chart_period,
             'total_orders_recent': total_orders_recent,
             'total_ca_recent': round(total_ca_recent, 2),
             'top_products': top_products,
+            'top_products_period': top_products_period,
             'ca_by_pos': ca_by_pos,
+            'ca_by_pos_period': ca_pos_period,
+            'compare_months': compare_months,
+            'budget_vs_actual': budget_vs_actual,
             'active_sessions': active_sessions,
             'config': config,
         }

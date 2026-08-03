@@ -126,6 +126,13 @@
                 </div>
             </t>
 
+            <t t-elif="state.loadError">
+                <div class="db-load-error">
+                    <i class="fa fa-exclamation-triangle fa-2x mb-2 d-block"/>
+                    <t t-esc="state.loadError"/>
+                </div>
+            </t>
+
             <t t-else="">
                 <!-- KPI Cards -->
                 <div class="kpi-row">
@@ -169,163 +176,427 @@
                     </div>
                 </div>
 
-                <div class="db-columns">
-                    <!-- Colonne gauche : Graphique CA + CA par PdV -->
-                    <div class="db-col">
-                        <div class="db-section">
-                            <div class="db-section-title">
-                                <i class="fa fa-bar-chart me-2"/>
-                                CA quotidien
-                                <span class="float-end section-meta">
-                                    <t t-esc="state.filters.recent_days"/>j:
-                                    <strong t-esc="state.data.total_orders_recent"/> cmd
-                                    / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/>
-                                </span>
+                <!-- Grille par LIGNES et non par colonnes : les trois graphiques de cet
+                     onglet n'ont pas les memes besoins de largeur. Le comparatif porte deux
+                     series sur 31 jours (62 barres) : en demi-colonne il tombe a ~28px par
+                     jour, en pleine largeur il en a 60 a 1920. Les tableaux et les deux
+                     autres graphiques restent en 2 colonnes. -->
+                <div class="db-columns db-rows">
+                    <!-- Comparatif mois en cours / mois precedent -->
+                    <!-- Modified by: odoo-frontend agent — 2026-07-31 -->
+                    <!-- Ce bloc ne suit PAS le filtre de date : il est defini par
+                         le calendrier. Le libelle de section le dit, sinon un
+                         utilisateur qui filtre mars lirait ces chiffres comme
+                         etant ceux de mars. -->
+                    <div class="db-section span-2">
+                        <div class="db-section-title">
+                            <i class="fa fa-exchange me-2"/>
+                            Comparatif mois en cours / mois précédent
+                            <span class="float-end section-meta">
+                                <t t-esc="comparePeriodLabel()"/>
+                            </span>
+                        </div>
+                        <t t-if="state.data.compare_months and state.data.compare_months.days.length">
+                            <t t-set="cmp" t-value="state.data.compare_months"/>
+                            <div class="cmp-summary">
+                                <div class="cmp-figures">
+                                    <span class="cmp-fig cmp-fig-cur">
+                                        <b t-esc="formatCurrency(cmp.total_current)"/>
+                                        <i><t t-esc="cmp.current_label"/> à date (<t t-esc="cmp.elapsed_days"/> j)</i>
+                                    </span>
+                                    <span class="cmp-fig cmp-fig-prev">
+                                        <b t-esc="formatCurrency(cmp.total_previous_same)"/>
+                                        <i><t t-esc="cmp.previous_label"/> — mêmes <t t-esc="cmp.elapsed_days"/> jours</i>
+                                    </span>
+                                    <t t-if="!isNum(cmp.delta_pct)">
+                                        <span class="cmp-delta cmp-delta-na">—</span>
+                                    </t>
+                                    <t t-else="">
+                                        <span t-attf-class="cmp-delta {{ cmp.delta_pct >= 0 ? 'cmp-delta-up' : 'cmp-delta-down' }}">
+                                            <t t-esc="cmp.delta_pct >= 0 ? '▲ +' : '▼ '"/><t t-esc="formatPct(cmp.delta_pct)"/> %
+                                        </span>
+                                    </t>
+                                    <span class="cmp-fig cmp-fig-ref">
+                                        <b t-esc="formatCurrency(cmp.total_previous_full)"/>
+                                        <i><t t-esc="cmp.previous_label"/> complet</i>
+                                    </span>
+                                </div>
+                                <div class="cmp-meta">
+                                    <!-- Legende dans l'ordre des barres (M-1 puis M,
+                                         chronologique), pas dans celui des chiffres de
+                                         synthese qui mettent le mois en cours en tete. -->
+                                    <span class="cmp-legend">
+                                        <span class="cmp-key cmp-key-prev"/><t t-esc="cmp.previous_label"/>
+                                        <span class="cmp-key cmp-key-cur"/><t t-esc="cmp.current_label"/>
+                                    </span>
+                                    <span class="cmp-note" t-esc="cmp.note || ''"/>
+                                </div>
                             </div>
-                            <div class="chart-container">
-                                <div class="bar-chart">
-                                    <t t-foreach="state.data.daily_ca" t-as="day" t-key="day.date">
-                                        <div class="bar-group">
-                                            <div class="bar-value" t-esc="formatCurrency(day.total)"/>
-                                            <div class="bar"
-                                                 t-attf-style="height: {{ getBarHeight(day.total) }}px"/>
-                                            <div class="bar-label" t-esc="day.date"/>
+                            <div class="chart-container chart-container-cmp">
+                                <t t-set="cmpMax" t-value="compareScaleMax()"/>
+                                <div class="bar-chart cmp-chart">
+                                    <t t-foreach="cmp.days" t-as="day" t-key="day.day">
+                                        <div class="bar-group" t-att-title="cmpDayTitle(day, cmp)">
+                                            <div class="cmp-bars">
+                                                <!-- Aucune barre quand la valeur est nulle : une barre
+                                                     a zero se lirait "rien vendu ce jour-la", faux pour
+                                                     un jour non advenu ou inexistant. -->
+                                                <div class="cmp-slot">
+                                                    <div t-if="isNum(day.previous)"
+                                                         class="bar cmp-prev"
+                                                         t-attf-style="height: {{ cmpBarHeight(day.previous, cmpMax) }}px"/>
+                                                </div>
+                                                <div class="cmp-slot">
+                                                    <div t-if="isNum(day.current)"
+                                                         class="bar cmp-cur"
+                                                         t-attf-style="height: {{ cmpBarHeight(day.current, cmpMax) }}px"/>
+                                                </div>
+                                            </div>
+                                            <div t-att-class="cmpDayLabelClass(day.day, cmp.days.length)">
+                                                <t t-if="cmpShowDay(day.day, cmp.days.length)"><t t-esc="day.day"/></t>
+                                            </div>
                                         </div>
                                     </t>
                                 </div>
+                                <div class="cmp-scale">max <t t-esc="formatCompact(cmpMax)"/></div>
                             </div>
+                        </t>
+                        <t t-else="">
+                            <div class="db-empty-state">Comparatif indisponible</div>
+                        </t>
+                    </div>
+                    <div class="db-section">
+                        <div class="db-section-title">
+                            <i class="fa fa-bar-chart me-2"/>
+                            Evolution du CA
+                            <span class="float-end section-meta">
+                                <t t-esc="state.data.chart_period || ''"/>
+                            </span>
                         </div>
-
-                        <!-- CA par PdV -->
-                        <div class="db-section">
-                            <div class="db-section-title">
-                                <i class="fa fa-shopping-bag me-2"/>CA par Point de Vente
-                                <span class="float-end section-meta">
-                                    <t t-esc="(state.data.ca_by_pos || []).length"/> ligne(s)
-                                </span>
+                        <div class="chart-container">
+                            <div class="bar-chart">
+                                <t t-foreach="state.data.daily_ca" t-as="day" t-key="day.date">
+                                    <div class="bar-group">
+                                        <div class="bar-value" t-esc="formatCurrency(day.total)"/>
+                                        <div class="bar"
+                                             t-attf-style="height: {{ getBarHeight(day.total) }}px"/>
+                                        <div class="bar-label" t-esc="day.date"/>
+                                    </div>
+                                </t>
                             </div>
-                            <t t-if="state.data.ca_by_pos and state.data.ca_by_pos.length">
-                              <div class="table-wrapper">
-                                <table class="mo-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Date</th>
-                                            <th>Point de Vente</th>
-                                            <th class="text-end">Commandes</th>
-                                            <th class="text-end">Qte vendue</th>
-                                            <th class="text-end">Panier moyen</th>
-                                            <th class="text-end">CA</th>
-                                            <th class="text-end">% du total</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <t t-foreach="state.data.ca_by_pos" t-as="pos" t-key="pos_index">
-                                            <tr>
-                                                <td t-esc="pos.date"/>
-                                                <td t-esc="pos.name"/>
-                                                <td class="text-end" t-esc="pos.count"/>
-                                                <td class="text-end" t-esc="formatQty(pos.total_qty)"/>
-                                                <td class="text-end"><t t-esc="formatCurrency(pos.avg_basket)"/></td>
-                                                <td class="text-end"><t t-esc="formatCurrency(pos.amount)"/></td>
-                                                <td class="text-end">
-                                                    <div class="pct-bar-container">
-                                                        <div class="pct-bar-fill" t-attf-style="width: {{ pos.pct }}%"/>
-                                                    </div>
-                                                    <span class="pct-label"><t t-esc="pos.pct"/>%</span>
-                                                </td>
-                                            </tr>
-                                        </t>
-                                    </tbody>
-                                </table>
-                              </div>
-                            </t>
-                            <t t-else="">
-                                <div class="db-empty-state">Aucune donnee PdV</div>
-                            </t>
                         </div>
                     </div>
 
-                    <!-- Colonne droite : Top produits + Sessions actives -->
-                    <div class="db-col">
-                        <div class="db-section">
-                            <div class="db-section-title">
-                                <i class="fa fa-trophy me-2"/>Top <t t-esc="state.filters.top_products_limit"/> produits
-                                <span class="float-end section-meta">
-                                    Periode : <t t-esc="state.filters.recent_days"/> jours
-                                </span>
-                            </div>
-                            <t t-if="state.data.top_products.length">
-                              <div class="table-wrapper">
-                                <table class="mo-table">
-                                    <thead>
-                                        <tr>
-                                            <th>#</th>
-                                            <th>Produit</th>
-                                            <th class="text-end">Qte vendue</th>
-                                            <th class="text-end">CA</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <t t-foreach="state.data.top_products" t-as="prod" t-key="prod_index">
-                                            <tr>
-                                                <td>
-                                                    <span t-attf-class="rank-badge {{ prod_index &lt; 3 ? 'rank-top' : '' }}">
-                                                        <t t-esc="prod_index + 1"/>
-                                                    </span>
-                                                </td>
-                                                <td t-esc="prod.product"/>
-                                                <td class="text-end" t-esc="formatQty(prod.qty)"/>
-                                                <td class="text-end"><t t-esc="formatCurrency(prod.ca)"/></td>
-                                            </tr>
-                                        </t>
-                                    </tbody>
-                                </table>
-                              </div>
-                            </t>
-                            <t t-else="">
-                                <div class="db-empty-state">Aucune vente sur la periode</div>
-                            </t>
+                    <!-- CA realise vs budget du mois -->
+                    <!-- Modified by: odoo-frontend agent — 2026-07-31 -->
+                    <div class="db-section">
+                        <div class="db-section-title">
+                            <i class="fa fa-bullseye me-2"/>CA réalisé vs budget
+                            <span class="float-end section-meta">
+                                <t t-esc="budgetPeriodLabel()"/>
+                            </span>
                         </div>
-
-                        <!-- Sessions actives -->
-                        <div class="db-section">
-                            <div class="db-section-title">
-                                <i class="fa fa-desktop me-2"/>Sessions actives
-                                <span class="float-end section-meta">
-                                    <t t-esc="state.data.active_sessions.length"/> session(s)
-                                </span>
+                        <!-- Modified by: odoo-frontend agent — 2026-08-03 -->
+                        <!-- Quatre statuts au contrat (missing / error / forbidden /
+                             ok) plus, en statut ok, un message du serveur : cinq
+                             situations distinctes. Le TEXTE vient du serveur (les
+                             deux ecrans doivent dire exactement la meme chose),
+                             l'icone porte la difference de nature. 'forbidden' est
+                             le cas normal de la plupart des utilisateurs depuis que
+                             la lecture est reservee a un groupe dedie : il ne doit
+                             ressembler ni a une panne ni a un ecran vide.
+                             Message, synthèse et tableau sont INDÉPENDANTS : le
+                             serveur envoie un message AVEC des lignes dès que les
+                             objectifs sont indisponibles, et un message SEUL quand il
+                             n'y a rien à lister (filtre caissier). -->
+                        <t t-if="!state.data.budget_vs_actual">
+                            <div class="db-empty-state">
+                                <i class="fa fa-info-circle me-1"/>Budget indisponible
                             </div>
-                            <t t-if="state.data.active_sessions.length">
-                              <div class="table-wrapper">
-                                <table class="mo-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Session</th>
-                                            <th>Caissier</th>
-                                            <th>Point de vente</th>
-                                            <th>Ouverture</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <t t-foreach="state.data.active_sessions" t-as="sess" t-key="sess.id">
-                                            <tr>
-                                                <td t-esc="sess.name"/>
-                                                <td t-esc="sess.user_id ? sess.user_id[1] : '-'"/>
-                                                <td t-esc="sess.config_id ? sess.config_id[1] : '-'"/>
-                                                <td t-esc="formatDatetime(sess.start_at)"/>
-                                            </tr>
-                                        </t>
-                                    </tbody>
-                                </table>
-                              </div>
-                            </t>
-                            <t t-else="">
+                        </t>
+                        <t t-else="">
+                            <t t-set="bud" t-value="state.data.budget_vs_actual"/>
+                            <t t-if="budgetHasState(bud)">
                                 <div class="db-empty-state">
-                                    <i class="fa fa-power-off fa-2x mb-2 d-block"/>
-                                    Aucune session ouverte
+                                    <i t-attf-class="fa {{ budgetStateIcon(bud) }} {{ budgetStateClass(bud) }} me-1"/>
+                                    <t t-esc="budgetStateText(bud)"/>
                                 </div>
                             </t>
+                            <t t-if="budgetShowFallback(bud)">
+                                <div class="db-empty-state">
+                                    <i class="fa fa-info-circle me-1"/>Aucun budget à afficher.
+                                </div>
+                            </t>
+                            <!-- Même partage qu'au niveau de la ligne : l'avancement
+                                 est neutre (une progression, pas un verdict), le rythme
+                                 porte le vert/rouge. Le budget plein reste affiché,
+                                 c'est l'objectif et il ne bouge pas ; le budget à date
+                                 est la base de la couleur, il est donc donné aussi.
+                                 Masquée dès que les objectifs ne sont pas lisibles :
+                                 ses totaux vaudraient 0 pour un objectif INCONNU. -->
+                            <div class="cmp-summary" t-if="budgetReadable(bud)">
+                                <div class="cmp-figures">
+                                    <span class="cmp-fig cmp-fig-cur">
+                                        <b t-esc="formatCurrency(bud.total_actual)"/>
+                                        <i>Réalisé à date (<t t-esc="bud.elapsed_days"/> j / <t t-esc="bud.month_days"/>)</i>
+                                    </span>
+                                    <span class="cmp-fig cmp-fig-prev">
+                                        <b t-esc="formatCurrency(bud.total_budget_month)"/>
+                                        <i>Budget <t t-esc="bud.month_label"/> (plein mois)</i>
+                                    </span>
+                                    <!-- Le " %" est DANS la branche : formatPct rend déjà "—"
+                                         quand le taux n'existe pas, et "— % du budget" n'est pas
+                                         une phrase. La page /direction écrit "— du budget" ; les
+                                         deux écrans doivent dire la même chose mot pour mot. Cas
+                                         désormais atteignable : tous les objectifs saisis à 0
+                                         (PdV fermés) donne has_any_budget=true, donc synthèse
+                                         affichée, avec un pourcentage nul. -->
+                                    <span class="cmp-delta cmp-delta-neutral">
+                                        <t t-if="isNum(bud.total_pct_month)">
+                                            <t t-esc="formatPct(bud.total_pct_month)"/> % du budget
+                                        </t>
+                                        <t t-else="">— du budget</t>
+                                    </span>
+                                    <t t-if="!isNum(bud.total_pct_todate)">
+                                        <span class="cmp-delta cmp-delta-na">rythme —</span>
+                                    </t>
+                                    <t t-else="">
+                                        <span t-attf-class="cmp-delta {{ bud.total_pct_todate >= 100 ? 'cmp-delta-up' : 'cmp-delta-down' }}">
+                                            <t t-esc="bud.total_pct_todate >= 100 ? '▲ ' : '▼ '"/><t t-esc="formatPct(bud.total_pct_todate)"/> % du rythme attendu
+                                        </span>
+                                    </t>
+                                    <span class="cmp-fig cmp-fig-ref">
+                                        <b t-esc="formatCurrency(bud.total_budget_todate)"/>
+                                        <i>Budget à date</i>
+                                    </span>
+                                </div>
+                                <div class="cmp-meta">
+                                    <span class="cmp-legend"><t t-esc="bud.total_count"/> point(s) de vente</span>
+                                    <span class="cmp-note" t-esc="bud.note || ''"/>
+                                </div>
+                            </div>
+                            <!-- Une ligne par PdV, tous les PdV : une jauge horizontale
+                                 ne dépend pas du nombre de lignes, contrairement aux
+                                 paires de barres verticales. Même conteneur scrollable à
+                                 en-tête fixe que les autres tableaux de l'écran.
+                                 Listé même quand aucun objectif n'est lisible : le
+                                 réalisé du MOIS par PdV est une donnée réelle, absente
+                                 du reste de l'écran (le tableau "CA par PdV" suit le
+                                 filtre de date, pas le mois calendaire). Les colonnes
+                                 d'objectif disent alors pourquoi elles sont vides. -->
+                            <div class="table-wrapper" t-if="budgetShowTable(bud)">
+                                <table class="mo-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Point de vente</th>
+                                            <th>Atteinte</th>
+                                            <th class="text-end">Réalisé</th>
+                                            <th class="text-end">Budget mois</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <t t-foreach="bud.rows" t-as="row" t-key="row.id">
+                                            <tr>
+                                                <td t-esc="row.name"/>
+                                                <!-- Trois rendus distincts : pas d'objectif ("—"),
+                                                     objectif sans taux calculable ("s. o.", cas type
+                                                     de l'objectif à 0), objectif mesurable (jauge).
+                                                     C'est has_budget qui tranche, pas la véracité du
+                                                     montant — un objectif saisi à 0 EST un objectif. -->
+                                                <td class="bud-cell">
+                                                    <t t-if="budgetShowGauge(row)">
+                                                        <span class="bud-gauge" role="img"
+                                                              t-att-title="budgetGaugeLabel(row)"
+                                                              t-att-aria-label="budgetGaugeLabel(row)">
+                                                            <span t-attf-class="bud-gauge-fill {{ budgetPaceClass(row) }}"
+                                                                  t-attf-style="width: {{ budgetGaugeWidth(row) }}%"/>
+                                                        </span>
+                                                        <span t-attf-class="bud-pct {{ budgetPaceClass(row) }}">
+                                                            <t t-esc="formatPct(row.pct_month)"/> %
+                                                        </span>
+                                                    </t>
+                                                    <t t-elif="budgetShowFlat(row)">
+                                                        <!-- Sans rail : un rail vide se lirait
+                                                             "0 % réalisé", ce qui serait faux.
+                                                             role/aria-label comme la jauge : "s. o."
+                                                             ne veut rien dire lu à voix haute. -->
+                                                        <span class="bud-pct cell-muted" role="img"
+                                                              t-att-title="budgetZeroTitle(row)"
+                                                              t-att-aria-label="budgetZeroTitle(row)">s. o.</span>
+                                                    </t>
+                                                    <t t-else="">
+                                                        <span class="cell-muted" role="img"
+                                                              t-att-title="budgetNoTargetTitle()"
+                                                              t-att-aria-label="budgetNoTargetTitle()">—</span>
+                                                    </t>
+                                                </td>
+                                                <td class="text-end"><t t-esc="formatCurrency(row.actual)"/></td>
+                                                <!-- Montant réel de l'objectif, zéro compris : seule
+                                                     l'absence d'objectif donne "—". -->
+                                                <td class="text-end">
+                                                    <t t-if="budgetHasTarget(row)"><t t-esc="formatCurrency(row.budget_month)"/></t>
+                                                    <t t-else=""><span class="cell-muted" role="img"
+                                                                       t-att-title="budgetNoTargetTitle()"
+                                                                       t-att-aria-label="budgetNoTargetTitle()">—</span></t>
+                                                </td>
+                                            </tr>
+                                        </t>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </t>
+                    </div>
+
+                    <!-- Top produits -->
+                    <div class="db-section">
+                        <div class="db-section-title">
+                            <!-- Titre construit en JS : voir topProductsTitle() -->
+                            <i class="fa fa-trophy me-2"/><t t-esc="topProductsTitle()"/>
+                            <span class="float-end section-meta">
+                                <t t-esc="state.data.top_products_period || ''"/> ·
+                                <strong t-esc="state.data.total_orders_recent"/> cmd
+                                / <strong t-esc="formatCurrency(state.data.total_ca_recent)"/>
+                            </span>
                         </div>
+                        <t t-if="state.data.top_products.length">
+                          <div class="table-wrapper">
+                            <table class="mo-table top-products-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Produit</th>
+                                        <th class="text-end">Qte vendue</th>
+                                        <th class="text-end">CA</th>
+                                        <th>PdV principal</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="state.data.top_products" t-as="prod" t-key="prod_index">
+                                        <tr>
+                                            <td>
+                                                <span t-attf-class="rank-badge {{ prod_index &lt; 3 ? 'rank-top' : '' }}">
+                                                    <t t-esc="prod_index + 1"/>
+                                                </span>
+                                            </td>
+                                            <td t-esc="prod.product"/>
+                                            <td class="text-end" t-esc="formatQty(prod.qty)"/>
+                                            <td class="text-end"><t t-esc="formatCurrency(prod.ca)"/></td>
+                                            <td class="top-pos-cell">
+                                                <t t-if="prod.top_pos">
+                                                    <span class="top-pos-name" t-esc="prod.top_pos"/>
+                                                    <span t-if="prod.top_pos_share"
+                                                          t-attf-class="share-badge {{ prod.top_pos_share &gt; 100 ? 'share-anomaly' : '' }}"
+                                                          t-att-title="shareTitle(prod.top_pos_share)"
+                                                          t-esc="formatShare(prod.top_pos_share)"/>
+                                                </t>
+                                                <t t-else="">
+                                                    <span class="cell-muted">—</span>
+                                                </t>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                            </table>
+                          </div>
+                        </t>
+                        <t t-else="">
+                            <!-- Meme libelle que /direction, dont le helper table()
+                                 rend "Aucune donnée" pour un tableau vide. Le titre de
+                                 section porte deja le contexte (quel bloc, quelle
+                                 periode), le libelle n'a pas a le repeter. -->
+                            <div class="db-empty-state">Aucune donnée</div>
+                        </t>
+                    </div>
+
+                    <!-- CA par PdV -->
+                    <div class="db-section">
+                        <div class="db-section-title">
+                            <i class="fa fa-shopping-bag me-2"/>CA par Point de Vente
+                            <span class="float-end section-meta">
+                                <t t-esc="state.data.ca_by_pos_period || ''"/> ·
+                                <t t-esc="(state.data.ca_by_pos || []).length"/> ligne(s)
+                            </span>
+                        </div>
+                        <t t-if="state.data.ca_by_pos and state.data.ca_by_pos.length">
+                          <div class="table-wrapper">
+                            <table class="mo-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Point de Vente</th>
+                                        <th class="text-end">Commandes</th>
+                                        <th class="text-end">Qte vendue</th>
+                                        <th class="text-end">Panier moyen</th>
+                                        <th class="text-end">CA</th>
+                                        <th class="text-end">% du total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="state.data.ca_by_pos" t-as="pos" t-key="pos_index">
+                                        <tr>
+                                            <td t-esc="pos.date"/>
+                                            <td t-esc="pos.name"/>
+                                            <td class="text-end" t-esc="pos.count"/>
+                                            <td class="text-end" t-esc="formatQty(pos.total_qty)"/>
+                                            <td class="text-end"><t t-esc="formatCurrency(pos.avg_basket)"/></td>
+                                            <td class="text-end"><t t-esc="formatCurrency(pos.amount)"/></td>
+                                            <td class="text-end">
+                                                <div class="pct-bar-container">
+                                                    <div class="pct-bar-fill" t-attf-style="width: {{ pos.pct }}%"/>
+                                                </div>
+                                                <span class="pct-label"><t t-esc="pos.pct"/>%</span>
+                                            </td>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                            </table>
+                          </div>
+                        </t>
+                        <t t-else="">
+                            <!-- Idem : "Aucune donnée", comme /direction. L'ancien
+                                 libelle portait de surcroit une faute d'accent. -->
+                            <div class="db-empty-state">Aucune donnée</div>
+                        </t>
+                    </div>
+
+                    <!-- Sessions actives -->
+                    <div class="db-section span-2">
+                        <div class="db-section-title">
+                            <i class="fa fa-desktop me-2"/>Sessions actives
+                            <span class="float-end section-meta">
+                                <t t-esc="state.data.active_sessions.length"/> session(s)
+                            </span>
+                        </div>
+                        <t t-if="state.data.active_sessions.length">
+                          <div class="table-wrapper">
+                            <table class="mo-table">
+                                <thead>
+                                    <tr>
+                                        <th>Session</th>
+                                        <th>Caissier</th>
+                                        <th>Point de vente</th>
+                                        <th>Ouverture</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="state.data.active_sessions" t-as="sess" t-key="sess.id">
+                                        <tr>
+                                            <td t-esc="sess.name"/>
+                                            <td t-esc="sess.user_id ? sess.user_id[1] : '-'"/>
+                                            <td t-esc="sess.config_id ? sess.config_id[1] : '-'"/>
+                                            <td t-esc="formatDatetime(sess.start_at)"/>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                            </table>
+                          </div>
+                        </t>
+                        <t t-else="">
+                            <div class="db-empty-state">
+                                <i class="fa fa-power-off fa-2x mb-2 d-block"/>
+                                Aucune session ouverte
+                            </div>
+                        </t>
                     </div>
                 </div>
             </t>
