@@ -182,16 +182,19 @@
                      jour, en pleine largeur il en a 60 a 1920. Les tableaux et les deux
                      autres graphiques restent en 2 colonnes. -->
                 <div class="db-columns db-rows">
-                    <!-- Comparatif mois en cours / mois precedent -->
+                    <!-- Comparatif mois de reference / mois precedent -->
                     <!-- Modified by: odoo-frontend agent — 2026-07-31 -->
-                    <!-- Ce bloc ne suit PAS le filtre de date : il est defini par
-                         le calendrier. Le libelle de section le dit, sinon un
-                         utilisateur qui filtre mars lirait ces chiffres comme
-                         etant ceux de mars. -->
+                    <!-- Modified by: odoo-frontend agent — 2026-08-03 -->
+                    <!-- Ce bloc SUIT desormais le filtre de date : le mois de
+                         reference est celui ou tombe la FIN de la periode
+                         filtree, compare au mois calendaire precedent. Les deux
+                         mois reellement compares sont nommes par le serveur
+                         (period_label), rendu tel quel — jamais reconstruit
+                         ici : la page /direction consomme le meme payload. -->
                     <div class="db-section span-2">
                         <div class="db-section-title">
                             <i class="fa fa-exchange me-2"/>
-                            Comparatif mois en cours / mois précédent
+                            Comparatif mensuel
                             <span class="float-end section-meta">
                                 <t t-esc="comparePeriodLabel()"/>
                             </span>
@@ -200,25 +203,46 @@
                             <t t-set="cmp" t-value="state.data.compare_months"/>
                             <div class="cmp-summary">
                                 <div class="cmp-figures">
+                                    <!-- « à date » n'a de sens que sur un mois EN
+                                         COURS : un mois clos est écoulé à 100 %, un
+                                         mois à venir n'a aucun jour comparé. Les deux
+                                         libellés sont construits en JS (cmpCurrentLabel
+                                         / cmpBasisLabel), mot pour mot comme sur
+                                         /direction. -->
                                     <span class="cmp-fig cmp-fig-cur">
                                         <b t-esc="formatCurrency(cmp.total_current)"/>
-                                        <i><t t-esc="cmp.current_label"/> à date (<t t-esc="cmp.elapsed_days"/> j)</i>
+                                        <i t-esc="cmpCurrentLabel(cmp)"/>
                                     </span>
                                     <span class="cmp-fig cmp-fig-prev">
                                         <b t-esc="formatCurrency(cmp.total_previous_same)"/>
-                                        <i><t t-esc="cmp.previous_label"/> — mêmes <t t-esc="cmp.elapsed_days"/> jours</i>
+                                        <i t-esc="cmpBasisLabel(cmp)"/>
                                     </span>
-                                    <t t-if="!isNum(cmp.delta_pct)">
-                                        <span class="cmp-delta cmp-delta-na">—</span>
-                                    </t>
-                                    <t t-else="">
-                                        <span t-attf-class="cmp-delta {{ cmp.delta_pct >= 0 ? 'cmp-delta-up' : 'cmp-delta-down' }}">
-                                            <t t-esc="cmp.delta_pct >= 0 ? '▲ +' : '▼ '"/><t t-esc="formatPct(cmp.delta_pct)"/> %
-                                        </span>
-                                    </t>
+                                    <!-- Modified by: odoo-frontend agent — 2026-08-04 -->
+                                    <!-- La FLÈCHE ne dit que la direction, jamais
+                                         lequel des deux mois évolue : le sens se
+                                         déduisait d'un ordre de mots, et l'écran en
+                                         présentait trois. Le libellé explicite
+                                         (« août 2026 par rapport à juillet 2026 :
+                                         -96,6 % ») le NOMME, en infobulle et pour les
+                                         lecteurs d'écran. role="img" fait lire le
+                                         libellé À LA PLACE du contenu — le taux y est
+                                         donc repris. Construit en JS, mot pour mot
+                                         comme sur /direction. -->
+                                    <span t-attf-class="cmp-delta {{ cmpDeltaClass(cmp) }}"
+                                          t-att-role="cmpDeltaRole(cmp)"
+                                          t-att-title="cmpDeltaTitle(cmp)"
+                                          t-att-aria-label="cmpDeltaTitle(cmp)"
+                                          t-esc="cmpDeltaText(cmp)"/>
+                                    <!-- « complet » n'est vrai que si le mois précédent
+                                         est fini, et il ne l'est jamais quand le filtre
+                                         vise un mois futur : M-1 est alors soit le mois
+                                         EN COURS (le chiffre s'arrête aux jours écoulés),
+                                         soit lui aussi à venir (il vaut 0 parce que rien
+                                         n'a eu lieu, pas parce qu'un mois entier serait
+                                         resté vide). -->
                                     <span class="cmp-fig cmp-fig-ref">
                                         <b t-esc="formatCurrency(cmp.total_previous_full)"/>
-                                        <i><t t-esc="cmp.previous_label"/> complet</i>
+                                        <i t-esc="cmpPreviousFullLabel(cmp)"/>
                                     </span>
                                 </div>
                                 <div class="cmp-meta">
@@ -331,14 +355,16 @@
                                  est neutre (une progression, pas un verdict), le rythme
                                  porte le vert/rouge. Le budget plein reste affiché,
                                  c'est l'objectif et il ne bouge pas ; le budget à date
-                                 est la base de la couleur, il est donc donné aussi.
+                                 est la base de la couleur, il est donc donné aussi —
+                                 mais sur un mois EN COURS seulement (cf.
+                                 budgetShowPace()).
                                  Masquée dès que les objectifs ne sont pas lisibles :
                                  ses totaux vaudraient 0 pour un objectif INCONNU. -->
                             <div class="cmp-summary" t-if="budgetReadable(bud)">
                                 <div class="cmp-figures">
                                     <span class="cmp-fig cmp-fig-cur">
                                         <b t-esc="formatCurrency(bud.total_actual)"/>
-                                        <i>Réalisé à date (<t t-esc="bud.elapsed_days"/> j / <t t-esc="bud.month_days"/>)</i>
+                                        <i t-esc="budgetActualLabel(bud)"/>
                                     </span>
                                     <span class="cmp-fig cmp-fig-prev">
                                         <b t-esc="formatCurrency(bud.total_budget_month)"/>
@@ -357,18 +383,28 @@
                                         </t>
                                         <t t-else="">— du budget</t>
                                     </span>
-                                    <t t-if="!isNum(bud.total_pct_todate)">
-                                        <span class="cmp-delta cmp-delta-na">rythme —</span>
-                                    </t>
-                                    <t t-else="">
-                                        <span t-attf-class="cmp-delta {{ bud.total_pct_todate >= 100 ? 'cmp-delta-up' : 'cmp-delta-down' }}">
-                                            <t t-esc="bud.total_pct_todate >= 100 ? '▲ ' : '▼ '"/><t t-esc="formatPct(bud.total_pct_todate)"/> % du rythme attendu
+                                    <!-- Les DEUX éléments « à date » — badge de rythme
+                                         et budget proratisé — ne sont rendus que sur un
+                                         mois EN COURS. Sur un mois clos ils répètent
+                                         l'atteinte et le budget plein affichés juste à
+                                         côté (prorata à 100 %) ; sur un mois à venir ils
+                                         valent 0 et « rythme — ». Le badge neutre
+                                         d'atteinte, lui, reste rendu à l'identique dans
+                                         les trois cas. -->
+                                    <t t-if="budgetShowPace()">
+                                        <t t-if="!isNum(bud.total_pct_todate)">
+                                            <span class="cmp-delta cmp-delta-na">rythme —</span>
+                                        </t>
+                                        <t t-else="">
+                                            <span t-attf-class="cmp-delta {{ bud.total_pct_todate >= 100 ? 'cmp-delta-up' : 'cmp-delta-down' }}">
+                                                <t t-esc="bud.total_pct_todate >= 100 ? '▲ ' : '▼ '"/><t t-esc="formatPct(bud.total_pct_todate)"/> % du rythme attendu
+                                            </span>
+                                        </t>
+                                        <span class="cmp-fig cmp-fig-ref">
+                                            <b t-esc="formatCurrency(bud.total_budget_todate)"/>
+                                            <i>Budget à date</i>
                                         </span>
                                     </t>
-                                    <span class="cmp-fig cmp-fig-ref">
-                                        <b t-esc="formatCurrency(bud.total_budget_todate)"/>
-                                        <i>Budget à date</i>
-                                    </span>
                                 </div>
                                 <div class="cmp-meta">
                                     <span class="cmp-legend"><t t-esc="bud.total_count"/> point(s) de vente</span>

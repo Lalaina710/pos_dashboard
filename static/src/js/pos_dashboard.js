@@ -290,6 +290,230 @@ class PosDashboard extends Component {
         return budget ? budget.period_label || "" : "";
     }
 
+    // --- Etat du mois de reference ---
+    // Modified by: odoo-frontend agent — 2026-08-03
+    //
+    // Etat replie en un seul mot a partir des DEUX booleens que le serveur
+    // affirme : 'past' (clos), 'current' (en cours), 'future' (a venir). Le
+    // frontend ne le deduit jamais de dates — la regle d'ancrage (le mois ou
+    // tombe la FIN de la periode filtree) vit cote serveur, et deux ecrans
+    // consomment ce meme payload : la dupliquer ici la ferait deriver a la
+    // premiere correction.
+    //
+    // Deux booleens et non un seul : un mois A VENIR n'est ni clos ni en cours,
+    // et c'est un cas atteignable (le filtre de date accepte une periode
+    // future). Les deux a faux = mois en cours.
+    //
+    // L'ordre des tests fait foi : 'past' l'emporterait sur une combinaison
+    // contradictoire que le serveur n'emet pas — c'est le repli le plus sur, il
+    // n'annonce aucun rythme.
+    //
+    // Un payload anterieur au contrat n'a aucune des deux cles et retombe sur
+    // 'current', qui est le comportement historique — meme discipline de garde
+    // d'ecart de deploiement que has_budget / has_any_budget. Identique, mot
+    // pour mot, a monthState() dans direction_dashboard.js.
+    monthState(primary, fallback) {
+        for (const o of [primary, fallback]) {
+            if (!o) {
+                continue;
+            }
+            if (o.is_closed_month === true) return "past";
+            if (o.is_future_month === true) return "future";
+            if (o.is_closed_month === false || o.is_future_month === false) {
+                return "current";
+            }
+        }
+        return "current";
+    }
+
+    // Etat du mois du COMPARATIF : ce bloc porte sa propre cle, il ne retombe
+    // pas sur celle du budget.
+    compareMonthState() {
+        return this.monthState(this.state.data.compare_months, null);
+    }
+
+    // Etat du mois du BUDGET. Les deux blocs sont ancres sur le MEME mois par
+    // construction : on prefere la cle du bloc budget et on retombe sur celle
+    // du comparatif.
+    budgetMonthState() {
+        return this.monthState(
+            this.state.data.budget_vs_actual, this.state.data.compare_months);
+    }
+
+    // Libelle du total du mois de reference dans le comparatif. Le template
+    // echappe (t-esc), ces deux methodes renvoient donc du texte brut.
+    //   - en cours : « juin 2026 à date (12 j) »     — inchange
+    //   - clos     : « mai 2026 (mois complet) »     — 100 % ecoule, pas « a date »
+    //   - a venir  : « juillet 2026 (mois à venir) » — 0 j, le total vaut 0
+    cmpCurrentLabel(cmp) {
+        const state = this.compareMonthState();
+        if (state === "past") return cmp.current_label + " (mois complet)";
+        if (state === "future") return cmp.current_label + " (mois à venir)";
+        return cmp.current_label + " à date (" + cmp.elapsed_days + " j)";
+    }
+
+    // Libelle de la BASE de comparaison — les memes jours du mois precedent.
+    //   - en cours : « mai 2026 — mêmes 12 jours »  — inchange, le compte est exact
+    //   - clos     : « avril 2026 — jours équivalents »
+    //   - a venir  : « août 2026 — aucun jour comparé »
+    //
+    // Le compte de jours DISPARAIT sur un mois clos, il ne peut pas y etre
+    // juste : elapsed_days y vaut la longueur du mois de REFERENCE, pas celle
+    // du mois compare. « avril 2026 — mêmes 31 jours » sur un mois qui en
+    // compte 30 est donc une phrase fausse — tolerable tant qu'elle ne
+    // s'affichait qu'au dernier jour du mois, plus du tout depuis que filtrer
+    // un mois passe la rend permanente. « jours équivalents » dit la seule
+    // chose vraie dans tous les cas : on compare les memes NUMEROS de jour, et
+    // la note du serveur precise deja qu'un jour sans equivalent n'est pas
+    // trace.
+    //
+    // Aucun calcul cote client : le libelle cesse d'annoncer un compte plutot
+    // que d'en annoncer un autre.
+    //
+    // Sur un mois a venir il n'y a aucun jour compare : « mêmes 0 jours » se
+    // lirait comme un bug, alors que le total de 0 est exact.
+    // Modified by: odoo-frontend agent — 2026-08-04 — compte de jours plus long que M-1
+    // Le compte disparait AUSSI sur un mois en cours des qu'il ne peut pas
+    // decrire les deux mois : elapsed_days est un jour du mois de REFERENCE, et
+    // le mois precedent peut etre plus court. Le 31/03 annonçait « février 2026
+    // — mêmes 31 jours » sur un mois qui en compte 28 ; les 29, 30 et 31/05,
+    // « avril 2026 — mêmes 31 jours » sur un mois de 30. Meme mensonge que sur
+    // un mois clos, meme reponse — et pas un Math.min : plafonner le compte
+    // reparerait le libelle de la BASE tout en laissant celui du mois de
+    // reference (« à date (31 j) ») annoncer un autre nombre, soit deux comptes
+    // differents pour une seule comparaison.
+    // Identique, mot pour mot, a cmpBasisLabel() dans direction_dashboard.js.
+    cmpBasisLabel(cmp) {
+        const state = this.compareMonthState();
+        if (state === "past") return cmp.previous_label + " — jours équivalents";
+        if (state === "future") return cmp.previous_label + " — aucun jour comparé";
+        if (!this.cmpDayCountFits(cmp)) {
+            return cmp.previous_label + " — jours équivalents";
+        }
+        return cmp.previous_label + " — mêmes " + cmp.elapsed_days + " jours";
+    }
+
+    // Le compte de jours ecoules du mois de reference decrit-il aussi le mois
+    // precedent ? previous_month_days ABSENT = backend anterieur au contrat : on
+    // garde le rendu historique plutot que d'effacer un compte exact dans le cas
+    // courant — meme discipline de garde d'ecart de deploiement que has_budget.
+    cmpDayCountFits(cmp) {
+        if (cmp.previous_month_days === undefined
+            || cmp.previous_month_days === null) {
+            return true;
+        }
+        return cmp.elapsed_days <= cmp.previous_month_days;
+    }
+
+    // Modified by: odoo-frontend agent — 2026-08-04 — « complet » sur un mois en cours
+    // Le total de reference de fin de mois porte sur le mois ENTIER — sauf quand
+    // le mois precedent est le mois EN COURS, cas atteignable des que le filtre
+    // vise un mois futur : avec date_to au 15/09 un 3 aout, le mois de reference
+    // est septembre et son precedent est aout, en cours. « août 2026 complet »
+    // s'affichait alors a cote de trois jours de chiffre d'affaires, pendant que
+    // la note du serveur disait juste en dessous que le jour en cours est partiel.
+    //
+    // Aucun compte de jours dans le libelle « à date » : les jours ecoules du
+    // mois EN COURS ne sont pas au contrat ici (elapsed_days decrit le mois de
+    // reference, qui est un AUTRE mois).
+    //
+    // TROISIEME cas, trouve en executant le rendu et non signale : quand le mois
+    // de reference est A VENIR, son precedent ne peut jamais etre clos — il est
+    // soit le mois en cours, soit lui aussi a venir. Filtrer jusqu'au 15/10 un
+    // 3 aout donne M = octobre et M-1 = septembre, et l'ecran affichait
+    // « septembre 2026 complet — 0,00 » : un mois entier a zero, pour un mois qui
+    // n'a pas commence.
+    //
+    // Le second test porte sur `false` EXPLICITE, pas sur l'absence : avec un
+    // backend qui annonce deja is_future_month mais pas encore
+    // previous_is_current_month, on ne peut pas distinguer les deux cas, et
+    // « mois à venir » colle a un total non nul serait pire que « complet ». La
+    // cle absente garde donc le rendu historique.
+    // Identique, mot pour mot, a cmpPreviousFullLabel() dans direction_dashboard.js.
+    cmpPreviousFullLabel(cmp) {
+        if (cmp.previous_is_current_month === true) {
+            return cmp.previous_label + " à date";
+        }
+        if (this.compareMonthState() === "future"
+            && cmp.previous_is_current_month === false) {
+            return cmp.previous_label + " (mois à venir)";
+        }
+        return cmp.previous_label + " complet";
+    }
+
+    // --- Badge d'ecart : le sens ancre dans du texte ---
+    // Modified by: odoo-frontend agent — 2026-08-04
+    // La FLECHE etait le seul porteur du SENS : elle dit qu'on monte ou qu'on
+    // descend, jamais lequel des deux mois le fait. Le lecteur devait le deduire
+    // d'un ordre de mots — et l'ecran en presentait trois (l'en-tete, les
+    // chiffres de synthese, les barres), dont un a l'envers. Le libelle explicite
+    // ne se deduit d'aucun ordre : il NOMME le mois qui evolue puis sa reference.
+    // Textes identiques, mot pour mot, a deltaBadge() / deltaTitle() dans
+    // direction_dashboard.js.
+
+    // Les deux mois compares, NOMMES dans le sens du calcul : le mois de
+    // reference d'abord, sa base ensuite. La source en est le serveur
+    // (delta_label) — les deux ecrans consomment le meme payload, deux
+    // formulations finiraient par diverger.
+    //
+    // delta_label est TOUJOURS une chaine non vide des que compare_months existe,
+    // y compris quand delta_pct est nul : il nomme le sens de la mesure, il
+    // n'affirme pas qu'il y en a une. Il ne peut donc pas servir de test
+    // d'existence du badge — c'est isNum(delta_pct) qui tranche.
+    //
+    // A defaut (JS servi face a un serveur anterieur au contrat) on compose des
+    // deux libelles deja au contrat, A L'IDENTIQUE sur les deux ecrans et mot
+    // pour mot comme le serveur : l'ancrage du sens est precisement ce qui
+    // manquait, mieux vaut une phrase composee des memes mots que pas de phrase
+    // du tout. Ce repli n'est atteignable qu'en deploiement partiel.
+    cmpEvolutionLabel(cmp) {
+        if (cmp.delta_label) {
+            return cmp.delta_label;
+        }
+        if (cmp.current_label && cmp.previous_label) {
+            return cmp.current_label + " par rapport à " + cmp.previous_label;
+        }
+        return "";
+    }
+
+    cmpDeltaClass(cmp) {
+        if (!this.isNum(cmp.delta_pct)) return "cmp-delta-na";
+        return cmp.delta_pct >= 0 ? "cmp-delta-up" : "cmp-delta-down";
+    }
+
+    cmpDeltaText(cmp) {
+        if (!this.isNum(cmp.delta_pct)) return "—";
+        return (cmp.delta_pct >= 0 ? "▲ +" : "▼ ")
+            + this.formatPct(cmp.delta_pct) + " %";
+    }
+
+    // Le taux est repete apres l'evolution nommee : role="img" fait lire le
+    // libelle A LA PLACE du contenu du badge, et une evolution sans sa valeur
+    // n'apprendrait rien de plus que la fleche qu'elle remplace.
+    //
+    // Taux absent (total du mois precedent nul) : le badge affiche « — », qui ne
+    // veut rien dire lu a voix haute. Le libelle dit alors pourquoi il n'y a pas
+    // de chiffre — meme traitement que « — » et « s. o. » dans le tableau budget.
+    //
+    // `false` et non "" quand il n'y a rien a dire : OWL retire alors l'attribut
+    // (meme convention que shareTitle()), le badge est rendu exactement comme
+    // avant — une garde d'ecart de deploiement ne doit rien changer de visible.
+    cmpDeltaTitle(cmp) {
+        const evolution = this.cmpEvolutionLabel(cmp);
+        if (!evolution) return false;
+        if (!this.isNum(cmp.delta_pct)) {
+            return evolution + " : évolution non calculable";
+        }
+        return evolution + " : " + (cmp.delta_pct >= 0 ? "+" : "")
+            + this.formatPct(cmp.delta_pct) + " %";
+    }
+
+    // Sans role, un aria-label pose sur un <span> est ignore par une partie des
+    // lecteurs d'ecran ; il n'est donc pose qu'avec lui, et disparait avec lui.
+    cmpDeltaRole(cmp) {
+        return this.cmpDeltaTitle(cmp) ? "img" : false;
+    }
+
     cmpScaleMax(rows, keys) {
         let max = 0;
         for (const row of rows || []) {
@@ -382,12 +606,25 @@ class PosDashboard extends Component {
     // --- CA realise vs budget : jauge, une ligne par PdV ---
     // Modified by: odoo-frontend agent — 2026-08-02
     //
-    // DEUX informations par jauge, et c'est delibere : le CHIFFRE est
-    // l'avancement dans le budget du MOIS, la COULEUR est le rythme (realise
-    // rapporte au budget PRORATISE a date). L'avancement seul afficherait 40 %
-    // en rouge le 12 du mois pour un PdV dans les temps ; le rythme seul ferait
-    // disparaitre la progression vers l'objectif mensuel. La legende sous le
-    // tableau, calculee cote serveur, explique les deux.
+    // DEUX informations par jauge SUR UN MOIS EN COURS, et c'est delibere : le
+    // CHIFFRE est l'avancement dans le budget du MOIS, la COULEUR est le rythme
+    // (realise rapporte au budget PRORATISE a date). L'avancement seul
+    // afficherait 40 % en rouge le 12 du mois pour un PdV dans les temps ; le
+    // rythme seul ferait disparaitre la progression vers l'objectif mensuel. La
+    // legende sous le tableau, calculee cote serveur, explique les deux.
+    //
+    // Modified by: odoo-frontend agent — 2026-08-03 — mois clos / mois a venir
+    // Sur un mois CLOS les deux se confondent : le mois est ecoule a 100 %, donc
+    // budget_todate == budget_month et pct_todate == pct_month. Continuer
+    // d'afficher un « rythme » laisserait croire a un prorata qui n'a plus lieu
+    // d'etre, et « a date » a une date d'arret qui n'existe pas. Le chiffre
+    // d'atteinte reste, et la COULEUR des jauges par PdV reste juste sans rien
+    // changer (elle derive de pct_todate, qui vaut alors l'atteinte finale) : le
+    // verdict par point de vente ne disparait pas avec le badge de synthese.
+    // Sur un mois A VENIR rien n'a couru : budget_todate vaut 0 et pct_todate
+    // est nul cote serveur. Aucun NaN ni infini n'est possible ici, tous les
+    // taux arrivent deja gardes ; ce sont les LIBELLES qui doivent cesser de
+    // promettre une mesure.
     // Textes identiques, mot pour mot, a ceux de direction_dashboard.js : les
     // deux ecrans rendent le meme payload.
 
@@ -412,11 +649,59 @@ class PosDashboard extends Component {
     // le budget du mois proratise, et le prorata est ~0 dans les premieres
     // minutes du 1er du mois — budget_todate arrondi a 0, donc pas de taux de
     // rythme. Le libelle disait alors "rythme : — %".
+    //
+    // Modified by: odoo-frontend agent — 2026-08-03 — mois clos / mois a venir
+    // TROIS formulations, une par etat du mois de reference — l'infobulle porte
+    // le rythme chiffre, elle ne peut donc pas continuer d'en annoncer un la ou
+    // il n'en existe plus :
+    //   - en cours : avancement · rythme · ecart a date          — inchange
+    //   - clos     : avancement · ecart (final, plus « a date ») — le rythme se
+    //                confond avec l'avancement, le repeter n'apprend rien
+    //   - a venir  : avancement · rien a mesurer                 — budget_todate
+    //                vaut 0, un « écart : +0,00 » se lirait comme un resultat
+    // Identique, mot pour mot, a gaugeLabel() dans direction_dashboard.js.
     budgetGaugeLabel(row) {
+        const state = this.budgetMonthState();
+        const avancement = this.budgetPct(row.pct_month) + " du budget du mois";
+        if (state === "future") {
+            return avancement + " · mois à venir, aucun rythme à mesurer";
+        }
         const ecart = row.actual - row.budget_todate;
-        return this.budgetPct(row.pct_month) + " du budget du mois · rythme : "
-            + this.budgetPct(row.pct_todate) + " du budget à date · écart à date : "
-            + (ecart >= 0 ? "+" : "") + this.formatCurrency(ecart);
+        const signe = (ecart >= 0 ? "+" : "") + this.formatCurrency(ecart);
+        if (state === "past") {
+            return avancement + " · écart : " + signe;
+        }
+        return avancement + " · rythme : " + this.budgetPct(row.pct_todate)
+            + " du budget à date · écart à date : " + signe;
+    }
+
+    // « Réalisé à date (12 j / 30) » n'a de sens que sur un mois en cours : le
+    // mois clos est ecoule en entier, le mois a venir n'a pas commence. Le
+    // compteur de jours disparait donc avec le « a date » — « 0 j / 30 » se
+    // lirait comme une panne de collecte plutot que comme un mois non commence.
+    budgetActualLabel(bud) {
+        const state = this.budgetMonthState();
+        if (state === "past") {
+            return "Réalisé " + bud.month_label + " (mois complet)";
+        }
+        if (state === "future") {
+            return "Réalisé " + bud.month_label + " (mois à venir)";
+        }
+        return "Réalisé à date (" + bud.elapsed_days + " j / " + bud.month_days + ")";
+    }
+
+    // Les DEUX elements « a date » de la synthese — le badge de rythme et le
+    // budget proratise — ne sont rendus que sur un mois EN COURS. Hors de ce cas
+    // ils ne mesurent plus rien : sur un mois clos ils repetent l'atteinte et le
+    // budget plein deja affiches a cote, sur un mois a venir ils valent 0 et
+    // « rythme — ». Le badge neutre d'atteinte, lui, est rendu A L'IDENTIQUE
+    // dans les trois cas — y compris son « — du budget » SANS « % ».
+    //
+    // monthState() normalise tout etat inconnu en 'current' : un payload
+    // anterieur au contrat garde donc le rendu historique, badge de rythme
+    // compris.
+    budgetShowPace() {
+        return this.budgetMonthState() === "current";
     }
 
     // Le REMPLISSAGE est plafonne a 100 % — une jauge ne deborde pas de son
@@ -429,6 +714,10 @@ class PosDashboard extends Component {
         return Math.min(Math.max(row.pct_month, 0), 100).toFixed(1);
     }
 
+    // La couleur reste pilotee par pct_todate dans les trois etats du mois, sans
+    // condition : sur un mois clos il vaut l'atteinte finale (prorata a 100 %),
+    // sur un mois a venir il est nul et le repli 'cell-muted' rend une jauge
+    // grise — ce qui est exact quand aucun rythme n'est mesurable.
     budgetPaceClass(row) {
         if (!this.isNum(row.pct_todate)) {
             return "cell-muted";

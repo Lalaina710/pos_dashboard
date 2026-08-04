@@ -8,6 +8,14 @@
 #   budget : statut 'forbidden' (bascule ACL), budget a 0 discernable d'un
 #   budget absent, borne volumetrique de la fenetre recente, neutralisation du
 #   bloc budget sous filtre caissier, rythme intra-journalier, total a date
+# Modified by: odoo-backend agent — 2026-08-03 — Changement de specification :
+#   le comparatif M/M-1 et le bloc budget SUIVENT desormais le filtre de date
+#   (ancrage sur le mois de la date de fin), prorata decline sur mois
+#   passe/courant/futur, libelles « hors filtre de date » supprimes
+# Modified by: odoo-backend agent — 2026-08-03 — Corrections de libelle du lot
+#   d'ancrage (aucun calcul touche) : period_label du comparatif remis dans
+#   l'ordre « M vs M-1 », ancrage textuel du delta (delta_label),
+#   previous_is_current_month expose, note du budget sur mois a venir
 from odoo import fields, http
 from odoo.exceptions import AccessError
 from odoo.http import request
@@ -223,17 +231,30 @@ class PosDashboardController(http.Controller):
         # isinstance avant len() : un date_from=123 leverait TypeError sur len(int)
         # AVANT d'entrer dans le try, et une liste de 10 elements passerait le
         # test de longueur pour casser dans strptime.
+        #
+        # Annee bornee a [1900, 2999] : '%Y-%m-%d' accepte l'annee 1 comme
+        # l'annee 9999, et ces extremes font DEBORDER l'arithmetique de dates en
+        # aval — (date(1, 1, 1) - timedelta(days=1)) leve OverflowError, donc
+        # une 500 sur une route auth='user' a partir d'un payload forge. Deux
+        # calculs y sont exposes : la borne d'etendue a 366 jours, et surtout le
+        # mois precedent du comparatif, qui derive desormais de date_to. Hors
+        # bornes = date ignoree, exactement comme une date illisible : la regle
+        # de ce bloc est « ce qui n'a pas ete parse n'existe pas ». Les bornes
+        # sont larges : aucune donnee PdV plausible ne tombe en dehors.
+        _min_year, _max_year = 1900, 2999
         if isinstance(_raw_from, str) and len(_raw_from) == 10:
             try:
-                date_from_local_dt = user_tz.localize(
-                    datetime.strptime(_raw_from, '%Y-%m-%d'))
+                _parsed = datetime.strptime(_raw_from, '%Y-%m-%d')
+                if _min_year <= _parsed.year <= _max_year:
+                    date_from_local_dt = user_tz.localize(_parsed)
             except (ValueError, TypeError):
                 date_from_local_dt = None
         if isinstance(_raw_to, str) and len(_raw_to) == 10:
             try:
-                date_to_local_dt = user_tz.localize(
-                    datetime.strptime(_raw_to, '%Y-%m-%d').replace(
-                        hour=23, minute=59, second=59))
+                _parsed = datetime.strptime(_raw_to, '%Y-%m-%d')
+                if _min_year <= _parsed.year <= _max_year:
+                    date_to_local_dt = user_tz.localize(
+                        _parsed.replace(hour=23, minute=59, second=59))
             except (ValueError, TypeError):
                 date_to_local_dt = None
 
@@ -726,26 +747,67 @@ class PosDashboardController(http.Controller):
 
         # --- Comparatif M/M-1 et CA vs budget ---
         # Modified by: odoo-frontend agent — 2026-07-31
+        # Modified by: odoo-backend agent — 2026-08-03 — ces deux blocs SUIVENT
+        #   desormais le filtre de date (changement de specification client)
         #
-        # Ces deux blocs IGNORENT volontairement les filtres de date : ils sont
-        # definis par le calendrier (mois de "aujourd'hui" et mois calendaire
-        # precedent), pas par la periode choisie. Les filtres PdV et caissier,
-        # eux, s'appliquent : ils sont portes par base_domain. Les libelles
-        # renvoyes au frontend le disent explicitement — un utilisateur qui
-        # filtre mars ne doit pas croire que ces blocs parlent de mars.
+        # ANCRAGE (regle tranchee par le client, a ne pas reinterpreter) : le
+        # mois de reference M est le mois dans lequel tombe la date de FIN de la
+        # periode filtree ; il est compare au mois calendaire PRECEDENT M-1.
+        # Toujours DEUX MOIS COMPLETS, jamais une demi-periode :
+        #     01/06 -> 30/06 : mai vs juin      01/03 -> 30/06 : mai vs juin
+        #     15/06 -> 30/06 : mai vs juin      01/06 -> 10/06 : mai vs juin
+        #     aucun filtre   : mois courant vs mois precedent (inchange)
         #
-        # UNE seule agregation sert les deux : un read_group (jour x PdV) sur
-        # la fenetre "1er du mois precedent -> fin de journee". Le comparatif
-        # s'obtient en sommant sur les PdV, le realise par PdV en sommant sur
-        # les jours du mois en cours. Deux read_group auraient rescanne deux
-        # fois pos_order, qui est la seule partie couteuse ici.
-        cur_month_first = now_local.date().replace(day=1)
-        prev_month_first = (cur_month_first - timedelta(days=1)).replace(day=1)
-        today_day = now_local.date().day
-        cur_month_days = calendar.monthrange(
-            cur_month_first.year, cur_month_first.month)[1]
+        # window_end_local porte deja exactement cette semantique (date_to si
+        # fourni, sinon maintenant), d'ou l'ancrage dessus et non sur now_local.
+        # CAS date_from SANS date_to : la periode court jusqu'a maintenant, donc
+        # le mois d'ancrage est le mois COURANT — identique au cas sans filtre.
+        # Rien d'absurde : la fin de la periode EST aujourd'hui, et la regle
+        # « mois de la date de fin » s'applique telle quelle. Consequence
+        # assumee : « du 01/01 a aujourd'hui » et « aucun filtre » comparent les
+        # deux memes mois. Un date_to SEUL ancre sur le mois de date_to, meme
+        # regle. Le libelle de periode dit dans tous les cas quels mois sont
+        # compares, donc l'ecran ne peut pas laisser croire autre chose.
+        #
+        # VOLUMETRIE : la fenetre agregee reste bornee a deux mois calendaires
+        # (<= 62 jours) quelle que soit l'etendue du filtre pose. date_domain
+        # n'est DELIBEREMENT pas ajoute ici : un filtre de 366 jours elargirait
+        # sinon cette agregation. Les filtres PdV et caissier, eux, s'appliquent
+        # — ils sont portes par base_domain.
+        #
+        # UNE seule agregation sert les deux blocs : un read_group (jour x PdV)
+        # sur la fenetre "1er de M-1 -> fin de M". Le comparatif s'obtient en
+        # sommant sur les PdV, le realise par PdV en sommant sur les jours de M.
+        # Deux read_group auraient rescanne deux fois pos_order, qui est la
+        # seule partie couteuse ici.
+        today_date = now_local.date()
+        cur_month_first = today_date.replace(day=1)
+        anchor_month_first = window_end_local.date().replace(day=1)
+        prev_month_first = (anchor_month_first - timedelta(days=1)).replace(day=1)
+        anchor_month_days = calendar.monthrange(
+            anchor_month_first.year, anchor_month_first.month)[1]
         prev_month_days = calendar.monthrange(
             prev_month_first.year, prev_month_first.month)[1]
+        anchor_month_last = anchor_month_first.replace(day=anchor_month_days)
+
+        # Etat du mois d'ancrage — TROIS cas, pas deux : le filtre peut porter
+        # sur un mois A VENIR, qui n'est ni clos ni en cours. C'est le serveur
+        # qui tranche et non le frontend : lui faire comparer des dates
+        # dupliquerait la regle d'ancrage dans les deux ecrans qui consomment ce
+        # payload, et les ferait deriver a la premiere correction.
+        #
+        # month_state reste INTERNE : le payload expose deux booleens
+        # (is_closed_month, is_future_month), affirmes par le serveur. « Ni l'un
+        # ni l'autre » = mois en cours ; le frontend n'a donc rien a deriver, et
+        # surtout aucune date a comparer.
+        if anchor_month_last < today_date:
+            month_state = 'past'
+        elif anchor_month_first > today_date:
+            month_state = 'future'
+        else:
+            month_state = 'current'
+        is_closed_month = month_state == 'past'
+        is_future_month = month_state == 'future'
 
         # localize() et non replace(tzinfo=...) : seul localize() choisit le bon
         # decalage a une bascule d'heure d'ete. Madagascar n'en a pas, mais ce
@@ -753,11 +815,22 @@ class PosDashboardController(http.Controller):
         cmp_start = user_tz.localize(
             datetime.combine(prev_month_first, datetime.min.time())
         ).astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        if month_state == 'current':
+            # Borne haute STRICTEMENT inchangee sur le cas sans filtre, qui est
+            # celui de l'ecran par defaut : today_end, deja calcule dans le
+            # fuseau de l'utilisateur en tete de methode.
+            cmp_end = today_end
+        else:
+            cmp_end = user_tz.localize(
+                datetime.combine(
+                    anchor_month_last, datetime.max.time()
+                ).replace(microsecond=0)
+            ).astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
 
         cmp_groups = PosOrder.read_group(
             base_domain + [
                 ('date_order', '>=', cmp_start),
-                ('date_order', '<=', today_end),
+                ('date_order', '<=', cmp_end),
             ],
             fields=['config_id', 'amount_total', 'date_order'],
             groupby=['date_order:day', 'config_id'],
@@ -778,31 +851,52 @@ class PosDashboardController(http.Controller):
             # += et non = : a une bascule d'heure, deux tranches UTC peuvent
             # retomber sur la meme date locale (meme raison que le graphique).
             ca_by_local_day[local_day] = ca_by_local_day.get(local_day, 0) + amount
-            if local_day >= cur_month_first and g.get('config_id'):
+            if (anchor_month_first <= local_day <= anchor_month_last
+                    and g.get('config_id')):
                 cfg_id = g['config_id'][0]
                 actual_by_config[cfg_id] = actual_by_config.get(cfg_id, 0) + amount
                 budget_config_names[cfg_id] = g['config_id'][1]
 
+        # Nombre de jours de M deja advenus. Sert de base au « meme nombre de
+        # jours » du mois precedent et au prorata du budget.
+        #   - mois PASSE  : le mois entier, il est ecoule a 100 %,
+        #   - mois COURANT: jour du mois d'aujourd'hui (comportement inchange),
+        #   - mois FUTUR  : 0, aucun jour n'a couru.
+        if month_state == 'past':
+            elapsed_day_count = anchor_month_days
+        elif month_state == 'future':
+            elapsed_day_count = 0
+        else:
+            elapsed_day_count = today_date.day
+
         # Mois de longueurs differentes : l'axe couvre le plus long des deux.
         # Une case sans equivalent vaut None, JAMAIS 0 :
-        #   - jour non encore advenu du mois en cours (13 -> 31 quand on est le 12),
-        #   - jour inexistant du mois precedent (31 quand il en compte 30).
+        #   - jour non encore advenu (13 -> 31 quand on est le 12),
+        #   - jour inexistant du mois compare (31 quand il en compte 30).
         # Un 0 se lirait "ce jour-la on n'a rien vendu", ce qui serait faux. Le
         # frontend ne trace aucune barre pour une valeur nulle.
+        #
+        # Le test « jour advenu » porte sur la DATE REELLE et non plus sur un
+        # numero de jour compare a today_day : depuis l'ancrage sur la periode
+        # filtree, M n'est plus forcement le mois courant, et M-1 peut lui-meme
+        # l'etre (filtre pose sur un mois a venir). L'ancienne forme, appliquee
+        # au seul mois courant, aurait trace a 0 les jours a venir de M-1.
+        def _compare_day_value(month_first, month_days, day_num):
+            if day_num > month_days:
+                return None
+            day = month_first.replace(day=day_num)
+            if day > today_date:
+                return None
+            return round(ca_by_local_day.get(day, 0), 2)
+
         compare_days = []
-        for day_num in range(1, max(cur_month_days, prev_month_days) + 1):
-            current_val = None
-            if day_num <= cur_month_days and day_num <= today_day:
-                current_val = round(ca_by_local_day.get(
-                    cur_month_first.replace(day=day_num), 0), 2)
-            previous_val = None
-            if day_num <= prev_month_days:
-                previous_val = round(ca_by_local_day.get(
-                    prev_month_first.replace(day=day_num), 0), 2)
+        for day_num in range(1, max(anchor_month_days, prev_month_days) + 1):
             compare_days.append({
                 'day': day_num,
-                'current': current_val,
-                'previous': previous_val,
+                'current': _compare_day_value(
+                    anchor_month_first, anchor_month_days, day_num),
+                'previous': _compare_day_value(
+                    prev_month_first, prev_month_days, day_num),
             })
 
         total_current = round(sum(
@@ -813,7 +907,7 @@ class PosDashboardController(http.Controller):
         # a part, comme reference de fin de mois.
         total_previous_same = round(sum(
             d['previous'] for d in compare_days
-            if d['previous'] is not None and d['day'] <= today_day), 2)
+            if d['previous'] is not None and d['day'] <= elapsed_day_count), 2)
         total_previous_full = round(sum(
             d['previous'] for d in compare_days if d['previous'] is not None), 2)
         delta_pct = None
@@ -821,31 +915,99 @@ class PosDashboardController(http.Controller):
             delta_pct = round(
                 (total_current - total_previous_same) / total_previous_same * 100, 1)
 
+        # Un filtre de date est pose des qu'UNE des deux bornes a ete parsee :
+        # date_to seul deplace l'ancrage tout autant que date_from.
+        date_filter_active = bool(date_from_local_dt or date_to_local_dt)
+        anchor_month_label = _month_label(anchor_month_first)
+
         compare_notes = []
-        if cur_month_days != prev_month_days:
+        if anchor_month_days != prev_month_days:
             compare_notes.append(
                 "les deux mois n'ont pas le même nombre de jours : "
                 "un jour sans équivalent n'est pas tracé")
-        if today_day < cur_month_days:
+        if month_state == 'future':
             compare_notes.append(
-                "les jours non encore advenus du mois en cours ne sont pas tracés")
-        compare_notes.append("le jour en cours est partiel")
+                "%s n'a pas encore commencé : aucun réalisé à comparer"
+                % anchor_month_label)
+        # Le mois en cours peut etre l'un OU l'autre des deux mois traces : M
+        # dans le cas nominal, mais M-1 quand le filtre porte sur un mois a
+        # venir. La note vaut dans les deux cas — elle explique les jours non
+        # traces, quelle que soit la serie a laquelle ils appartiennent.
+        if cur_month_first in (anchor_month_first, prev_month_first):
+            if today_date.day < calendar.monthrange(
+                    today_date.year, today_date.month)[1]:
+                compare_notes.append(
+                    "les jours non encore advenus du mois en cours ne sont "
+                    "pas tracés")
+            compare_notes.append("le jour en cours est partiel")
+        if date_filter_active:
+            # Le cas le plus deroutant est un filtre plus large ou plus etroit
+            # qu'un mois (01/03 -> 30/06, ou 01/06 -> 10/06) : la comparaison
+            # porte quand meme sur deux mois pleins. Le dire evite de lire les
+            # totaux comme ceux de la periode filtree.
+            compare_notes.append(
+                "la comparaison porte sur deux mois complets, pas sur "
+                "l'étendue exacte de la période filtrée")
+
+        prev_month_label = _month_label(prev_month_first)
+        # Suffixe commun au libelle de periode : il dit d'ou vient le couple de
+        # mois des qu'une borne de date a ete posee.
+        compare_period_suffix = (
+            " · d'après la fin de la période filtrée" if date_filter_active else '')
 
         compare_months = {
-            'current_label': _month_label(cur_month_first),
-            'previous_label': _month_label(prev_month_first),
+            'current_label': anchor_month_label,
+            'previous_label': prev_month_label,
             'days': compare_days,
             'total_current': total_current,
             'total_previous_same': total_previous_same,
             'total_previous_full': total_previous_full,
             'delta_pct': delta_pct,
-            'elapsed_days': today_day,
-            'current_month_days': cur_month_days,
+            'elapsed_days': elapsed_day_count,
+            'current_month_days': anchor_month_days,
             'previous_month_days': prev_month_days,
-            # Libelle porteur de l'avertissement : ce bloc ne suit pas le filtre
-            # de date, il faut que ce soit lisible sans ouvrir la documentation.
-            'period_label': '%s vs %s · hors filtre de date' % (
-                _month_label(cur_month_first), _month_label(prev_month_first)),
+            # Etat du mois de reference, AFFIRME par le serveur. Expose ICI
+            # aussi (et pas seulement sur le bloc budget) parce que chaque bloc
+            # doit etre lisible seul, et parce que le frontend en a besoin pour
+            # les memes raisons : « à date » et « mêmes N jours » n'ont pas de
+            # sens sur un mois clos, ou N vaut le mois entier. DEUX booleens et
+            # non un : un mois a venir n'est ni clos ni en cours. Les deux faux
+            # = mois en cours ; le frontend n'a rien a deriver.
+            'is_closed_month': is_closed_month,
+            'is_future_month': is_future_month,
+            # M-1 EST-IL LE MOIS EN COURS ? Depuis l'ancrage sur la periode
+            # filtree, oui c'est possible : un filtre pose sur un mois a venir
+            # fait de M-1 le mois courant (date_to au 15/09 le 3 aout -> M =
+            # septembre, M-1 = aout). Le total complet de M-1 n'est alors PAS
+            # un mois complet, et l'etiqueter « complet » ferait lire 3 jours de
+            # CA comme un mois entier — a deux lignes de la note « le jour en
+            # cours est partiel », qui dit le contraire.
+            # AFFIRME par le serveur, meme regle que is_closed_month /
+            # is_future_month : le frontend a INTERDICTION de le deriver. Il ne
+            # se deduit d'ailleurs pas des deux autres — sur un mois d'ancrage
+            # en cours, M-1 est toujours clos, et les deux booleens sont faux
+            # dans les deux situations.
+            'previous_is_current_month': prev_month_first == cur_month_first,
+            # Le libelle nomme les mois REELLEMENT compares, dans l'ordre
+            # « M vs M-1 » — celui de la ligne de chiffres ET celui que mesure
+            # delta_pct. L'ordre chronologique inverse (M-1 vs M) faisait lire
+            # au delta le sens oppose : « juillet vs aout · ▼ -96,6 % » se
+            # comprenait « juillet en baisse », alors que c'est aout qui est
+            # bas. Trois elements du meme ecran doivent enoncer le meme ordre.
+            # (L'axe du graphique, lui, reste chronologique : c'est un axe de
+            # temps, et sa legende nomme ses deux series.)
+            # Il portait « hors filtre de date » : cette mention affirmait
+            # exactement le contraire du comportement actuel, elle devait
+            # disparaitre partout.
+            'period_label': '%s vs %s%s' % (
+                anchor_month_label, prev_month_label, compare_period_suffix),
+            # Ancrage TEXTUEL du delta, pour titre / aria-label du badge.
+            # Sans lui, le sens de l'evolution n'est porte que par une fleche :
+            # aucun lecteur (ni aucun lecteur d'ecran) ne peut dire QUEL mois
+            # monte ou descend. Enonce le sens de la mesure — delta_pct compare
+            # bien le mois d'ancrage AU mois precedent, jamais l'inverse.
+            'delta_label': '%s par rapport à %s' % (
+                anchor_month_label, prev_month_label),
             'note': ' · '.join(compare_notes),
         }
 
@@ -873,8 +1035,12 @@ class PosDashboardController(http.Controller):
             # config_ids : liste NON VIDE ou None. Passer [] demanderait "aucun
             # PdV" au module de budget et renverrait {} — le bloc afficherait
             # "aucun budget saisi" en permanence.
+            # Meme ancrage que le comparatif (decision client) : le budget
+            # interroge est celui du mois de fin de periode filtree, pas celui
+            # du mois courant. Filtre juin -> objectif de juin contre realise
+            # de juin, les deux issus du meme anchor_month_first.
             budget_status, budget_map = self._get_pos_budget(
-                cur_month_first, [pos_config_id] if pos_config_id else None)
+                anchor_month_first, [pos_config_id] if pos_config_id else None)
 
             budget_ids = set(actual_by_config) | set(budget_map)
             if pos_config_id:
@@ -896,21 +1062,40 @@ class PosDashboardController(http.Controller):
         # taux), et la regle de prorata est affichee a l'ecran : un taux
         # d'atteinte dont on ignore la base est pire qu'inutile.
         #
-        # Le jour en cours COURT, il n'est pas ecoule : le compter pour un jour
-        # plein (today_day / jours du mois) exigeait 3/31 du budget le 3 aout a
-        # 09 h alors que 2,4 jours seulement avaient couru, et une journee
-        # entiere des le 1er a 00 h 05. Tous les PdV etaient donc
-        # structurellement un jour en retard — badge rouge chaque matin. On
-        # compte les jours REVOLUS plus la fraction ecoulee du jour courant,
-        # dans le fuseau de l'utilisateur (now_local), pas celui du serveur.
-        # Le dernier jour a 23 h 59 le ratio vaut ~1, donc budget plein. Il peut
-        # en revanche valoir ~0 dans les premieres minutes du 1er du mois : ce
-        # n'est pas une division par zero, tous les denominateurs qui en
-        # derivent sont gardes explicitement (pourcentage a None).
-        elapsed_seconds = (
-            now_local.hour * 3600 + now_local.minute * 60 + now_local.second)
-        elapsed_days_frac = today_day - 1 + elapsed_seconds / 86400.0
-        pace_ratio = elapsed_days_frac / float(cur_month_days)
+        # Depuis l'ancrage sur la periode filtree, le mois compare n'est plus
+        # forcement le mois en cours : le prorata se decline en TROIS cas.
+        #
+        # 1. Mois PASSE — il est ecoule a 100 %. Prorater n'a plus aucun sens :
+        #    budget_todate vaut le budget PLEIN du mois, donc pct_todate ==
+        #    pct_month, et « atteinte » et « rythme » se confondent. Continuer
+        #    d'afficher un rythme laisserait croire a un calcul qui n'a plus
+        #    lieu d'etre — d'ou is_closed_month, expose au frontend pour qu'il
+        #    change ses libelles sans refaire ce raisonnement de son cote.
+        # 2. Mois COURANT — comportement inchange. Le jour en cours COURT, il
+        #    n'est pas ecoule : le compter pour un jour plein (today_day /
+        #    jours du mois) exigeait 3/31 du budget le 3 aout a 09 h alors que
+        #    2,4 jours seulement avaient couru, et une journee entiere des le
+        #    1er a 00 h 05. Tous les PdV etaient donc structurellement un jour
+        #    en retard — badge rouge chaque matin. On compte les jours REVOLUS
+        #    plus la fraction ecoulee du jour courant, dans le fuseau de
+        #    l'utilisateur (now_local), pas celui du serveur.
+        # 3. Mois FUTUR — le filtre peut porter sur un mois a venir : 0 %
+        #    ecoule, donc budget_todate a 0 et AUCUN taux a date. La division
+        #    par zero est impossible : pace_ratio a pour denominateur le nombre
+        #    de jours du mois (jamais nul), et tous les taux qui derivent de
+        #    budget_todate sont deja gardes (`if budget_todate else None`), ce
+        #    qui rend None et non l'infini. Meme garde que dans les premieres
+        #    minutes du 1er du mois, ou le ratio vaut deja ~0.
+        if month_state == 'past':
+            elapsed_days_frac = float(anchor_month_days)
+        elif month_state == 'future':
+            elapsed_days_frac = 0.0
+        else:
+            elapsed_seconds = (
+                now_local.hour * 3600 + now_local.minute * 60 + now_local.second)
+            elapsed_days_frac = (
+                elapsed_day_count - 1 + elapsed_seconds / 86400.0)
+        pace_ratio = elapsed_days_frac / float(anchor_month_days)
         budget_rows = []
         for cfg_id in budget_ids:
             name = budget_config_names.get(cfg_id)
@@ -987,7 +1172,6 @@ class PosDashboardController(http.Controller):
         # d'enregistrement de pos.config (`if not name: continue`). L'ancien
         # message designait alors la mauvaise cause et envoyait la direction
         # verifier une saisie pourtant faite.
-        month_label_cur = _month_label(cur_month_first)
         budgeted_hidden = bool(
             (set(budget_map) & budget_ids) - {r['id'] for r in budget_rows})
         if budget_off_cashier:
@@ -1014,14 +1198,50 @@ class PosDashboardController(http.Controller):
         elif budgeted_hidden:
             budget_message = ("Aucun budget à afficher pour %s : les budgets "
                               "saisis portent sur des points de vente auxquels "
-                              "vous n'avez pas accès." % month_label_cur)
+                              "vous n'avez pas accès." % anchor_month_label)
         else:
-            budget_message = "Aucun budget saisi pour %s." % month_label_cur
+            budget_message = "Aucun budget saisi pour %s." % anchor_month_label
+
+        # Legende du taux, declinee sur les trois etats du mois. Sur un mois
+        # clos, parler de « rythme » ou de « budget proratisé » decrirait un
+        # calcul qui n'a plus lieu d'etre ; sur un mois a venir, il n'y a
+        # simplement rien a proratiser.
+        if month_state == 'past':
+            budget_note = ("%s est clos : le mois est écoulé à 100 %%, le "
+                           "pourcentage est donc le taux d'atteinte du budget "
+                           "du mois entier — il n'y a plus d'avance ni de "
+                           "retard de rythme à lire" % anchor_month_label)
+        elif month_state == 'future':
+            # « aucun taux d'atteinte » etait FAUX et contredisait l'ecran :
+            # pct_month vaut bien 0.0 sur un mois a venir (realise nul face a un
+            # objectif saisi) et le badge affiche « 0 % du budget » juste
+            # au-dessus de cette note. Ce qui n'existe pas sur un mois non
+            # commence, c'est le RYTHME : budget_todate vaut 0, donc pct_todate
+            # vaut None. C'est ce manque-la qu'il faut nommer.
+            budget_note = ("%s n'a pas commencé : aucun budget à date, donc "
+                           "aucun rythme à mesurer — le pourcentage affiché est "
+                           "le taux d'atteinte de l'objectif du mois entier"
+                           % anchor_month_label)
+        else:
+            budget_note = ("le pourcentage est la part du budget du mois déjà "
+                           "réalisée ; sa couleur indique l'avance ou le retard "
+                           "sur le budget proratisé à %s/%d jours écoulés · le "
+                           "jour en cours est compté au prorata de l'heure"
+                           % (('%.1f' % elapsed_days_frac).replace('.', ','),
+                              anchor_month_days))
+
+        budget_period_suffix = ''
+        if month_state == 'past':
+            budget_period_suffix = ' · mois clos'
+        elif month_state == 'future':
+            budget_period_suffix = ' · mois à venir'
+        if budget_off_cashier:
+            budget_period_suffix += ' · non comparable avec un filtre caissier'
 
         budget_vs_actual = {
             'status': budget_status,
             'message': budget_message,
-            'month_label': month_label_cur,
+            'month_label': anchor_month_label,
             'rows': budget_rows,
             # Vrai des qu'AU MOINS UNE ligne affichee porte un objectif saisi,
             # fut-il de 0. Le frontend s'en sert pour choisir entre "afficher
@@ -1035,27 +1255,33 @@ class PosDashboardController(http.Controller):
             'total_budget_month': budget_total_month,
             'total_pct_todate': budget_total_pct_todate,
             'total_pct_month': budget_total_pct_month,
-            'elapsed_days': today_day,
-            'month_days': cur_month_days,
-            # Deux choses a dire, parce que chaque jauge porte DEUX informations :
-            # le chiffre (avancement dans le budget du mois) et sa couleur
-            # (avance ou retard sur le budget proratise a date). Sans cette
-            # legende, un "40 %" en vert le 12 du mois se lirait comme une
-            # incoherence. La regle de prorata y figure : un taux dont on ignore
-            # la base est pire qu'inutile. Meme formulation que le comparatif
-            # pour le jour partiel — les deux blocs se lisent l'un apres l'autre.
-            'note': "le pourcentage est la part du budget du mois déjà "
-                    "réalisée ; sa couleur indique l'avance ou le retard sur le "
-                    "budget proratisé à %s/%d jours écoulés · le jour en cours "
-                    "est compté au prorata de l'heure"
-                    % (('%.1f' % elapsed_days_frac).replace('.', ','),
-                       cur_month_days),
-            # Le libelle porte les DEUX filtres que ce bloc ne suit pas : la
-            # date (par construction) et le caissier (par neutralisation).
-            'period_label': '%s · hors filtre de date%s' % (
-                month_label_cur,
-                ' · non comparable avec un filtre caissier'
-                if budget_off_cashier else ''),
+            'elapsed_days': elapsed_day_count,
+            'month_days': anchor_month_days,
+            # Etat du mois compare, AFFIRME par le serveur. Le frontend en a
+            # besoin pour CHOISIR SES LIBELLES : sur un mois clos, « Réalisé à
+            # date (30 j / 30) » et « % du rythme attendu » decrivent un calcul
+            # qui n'a plus lieu d'etre. Le frontend a INTERDICTION de les
+            # deriver — deux ecrans consomment ce payload et divergeraient a la
+            # premiere correction. Les deux faux = mois en cours.
+            'is_closed_month': is_closed_month,
+            'is_future_month': is_future_month,
+            # Deux choses a dire sur un mois EN COURS, parce que chaque jauge
+            # porte alors DEUX informations : le chiffre (avancement dans le
+            # budget du mois) et sa couleur (avance ou retard sur le budget
+            # proratise a date). Sans cette legende, un "40 %" en vert le 12 du
+            # mois se lirait comme une incoherence. La regle de prorata y figure :
+            # un taux dont on ignore la base est pire qu'inutile. Meme
+            # formulation que le comparatif pour le jour partiel — les deux blocs
+            # se lisent l'un apres l'autre.
+            # Sur un mois CLOS ou A VENIR, cette legende serait fausse : il n'y a
+            # plus (ou pas encore) de prorata, donc plus qu'UNE information.
+            'note': budget_note,
+            # Le libelle ne porte plus « hors filtre de date » : ce bloc SUIT
+            # desormais le filtre. Il nomme le mois compare, dit s'il est clos ou
+            # a venir (le pourcentage ne se lit pas pareil), et signale le seul
+            # filtre que ce bloc ne suit toujours pas — le caissier, faute de
+            # dimension caissier dans le budget.
+            'period_label': anchor_month_label + budget_period_suffix,
         }
 
         # --- Sessions actives ---

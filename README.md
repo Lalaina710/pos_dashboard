@@ -308,16 +308,97 @@ inter-modules.
 | `rows[].has_budget` | bool | `True` ssi le PdV a une ligne `budget.pos.line` pour le mois, **independamment du montant** — un budget saisi a 0 donne `True` |
 | `rows[].pct_month` / `pct_todate` | float\|None | `None` des que le denominateur est nul, donc **aussi bien** pour un objectif absent que pour un objectif de 0 : c'est `has_budget` qui distingue les deux, jamais le pourcentage |
 | `total_budget_todate` | float | somme de la colonne `budget_todate` des lignes (et non re-prorata du total mensuel) |
+| `is_closed_month` | bool | le mois ancre est **termine** |
+| `is_future_month` | bool | le mois ancre **n'a pas commence** |
 
-Le prorata compte les jours revolus **plus la fraction ecoulee du jour courant**
-dans le fuseau de l'utilisateur : le 3 a 09 h il vaut 2,4/31, pas 3/31.
+Ce bloc ne suit pas le filtre **caissier** : le budget n'ayant aucune dimension
+caissier, le bloc est **neutralise** (`rows` vide, `status` `ok`, message
+explicatif) des que `user_id` est pose, sans quoi le realise d'un seul caissier
+serait compare au budget plein du PdV. Le comparatif M/M-1, lui, reste calcule
+sous filtre caissier : les deux mois subissent le meme filtre.
 
-Ce bloc ne suit ni le filtre de date (il est defini par le calendrier) ni le
-filtre caissier : le budget n'ayant aucune dimension caissier, le bloc est
-**neutralise** (`rows` vide, `status` `ok`, message explicatif) des que
-`user_id` est pose, sans quoi le realise d'un seul caissier serait compare au
-budget plein du PdV. Le comparatif M/M-1, lui, reste calcule sous filtre
-caissier : les deux mois subissent le meme filtre.
+### Ancrage des blocs `compare_months` et `budget_vs_actual`
+
+Ces deux blocs **suivent le filtre de date** (specification client du
+2026-08-03 ; ils etaient auparavant calendaires et portaient la mention « hors
+filtre de date », desormais supprimee partout). La regle est :
+
+> Le mois de reference **M** est le mois dans lequel tombe la **date de fin** de
+> la periode filtree. Il est compare au mois calendaire precedent **M-1**.
+> Toujours **deux mois complets**, jamais une demi-periode.
+
+| Filtre pose | Comparaison |
+|---|---|
+| `01/06` -> `30/06` | mai vs juin |
+| `01/03` -> `30/06` | mai vs juin |
+| `15/06` -> `30/06` | mai vs juin |
+| `01/06` -> `10/06` | mai vs juin |
+| `date_from` seul | mois courant vs mois precedent (la periode court jusqu'a maintenant, la fin est donc aujourd'hui) |
+| `date_to` seul | mois de `date_to` vs mois precedent |
+| aucun filtre | mois courant vs mois precedent |
+
+Le budget suit **le meme ancrage** : filtre juin = objectif de juin contre
+realise de juin.
+
+**Volumetrie** — l'agregation qui alimente ces deux blocs reste bornee a deux
+mois calendaires (<= 62 jours) quelle que soit l'etendue du filtre : le domaine
+de date des autres sections n'y est deliberement pas applique. Un filtre de
+366 jours n'elargit donc pas cette requete.
+
+**Prorata du budget et valeurs aux bornes**, sur les trois etats du mois :
+
+| Etat | `elapsed_days` | `month_days` | `budget_todate` | `pct_todate` |
+|---|---|---|---|---|
+| **clos** (`is_closed_month`) | **`== month_days`** | jours du mois | `== budget_month` | `== pct_month` — atteinte et rythme se confondent, il n'y a plus de prorata a lire |
+| **en cours** (les deux booleens faux) | jour du mois courant (entier) ; le prorata, lui, compte les jours revolus **+ la fraction du jour courant** dans le fuseau de l'utilisateur (le 3 a 09 h : 2,4/31, pas 3/31) | jours du mois | prorata | taux de rythme |
+| **a venir** (`is_future_month`) | **`0`** | jours du mois | `0` | **`null`** — jamais l'infini ni une exception |
+
+Sur un mois **a venir**, `pct_month` existe et vaut `0.0` (realise nul face a un
+objectif saisi) : c'est bien un **taux d'atteinte**, et il s'affiche. Ce qui
+n'existe pas, c'est le **rythme** (`pct_todate` a `null`, faute de budget a
+date). Les libelles et la note du bloc doivent nommer ce manque-la, sinon
+l'ecran affirme « aucun taux d'atteinte » a cote d'un badge qui en affiche un.
+
+`is_closed_month` et `is_future_month` sont exposes sur les **deux** blocs, avec
+les memes valeurs, chaque bloc devant rester lisible seul. Le frontend a
+**interdiction de les deriver** : c'est le serveur qui les affirme, sans quoi
+la regle d'ancrage serait dupliquee dans les deux ecrans qui consomment ce
+payload et divergerait a la premiere correction. Les deux a `false` = mois en
+cours. Ils servent aux libelles (« Realise a date (30 j / 30) », « % du rythme
+attendu ») qui n'ont pas de sens hors mois en cours.
+
+`compare_months.days[].current` et `.previous` valent `null` pour tout jour non
+encore advenu, **y compris cote M-1** quand M-1 est le mois courant (filtre pose
+sur un mois a venir). Un `0` se lirait « ce jour-la on n'a rien vendu ».
+
+**Contrat `compare_months`** — consomme par les deux frontends, comme
+`top_products` et `budget_vs_actual` : toute modification de ces cles est une
+rupture inter-modules.
+
+| Cle | Type | Remarque |
+|---|---|---|
+| `current_label` / `previous_label` | str | libelles de M et M-1 (`juillet 2026`) |
+| `period_label` | str | **ordre `M vs M-1`** — celui de la ligne de chiffres ET celui que mesure `delta_pct`. Suffixe ` · d'apres la fin de la periode filtree` des qu'une borne de date est posee |
+| `delta_pct` | float\|None | evolution de M **par rapport a** M-1, sur les memes jours ; `None` si `total_previous_same` est nul |
+| `delta_label` | str | ancrage **textuel** du delta (`aout 2026 par rapport a juillet 2026`), a poser en `title` / `aria-label` du badge. Sans lui le sens n'est porte que par une fleche |
+| `total_current` | float | M sur les jours advenus |
+| `total_previous_same` | float | M-1 sur les **memes** `elapsed_days` jours — base de `delta_pct` |
+| `total_previous_full` | float | M-1 **entier**. N'est un mois complet que si `previous_is_current_month` est faux |
+| `elapsed_days` | int | jours advenus de **M** (mois de reference), **jamais** la longueur de M-1 |
+| `current_month_days` / `previous_month_days` | int | longueurs calendaires de M et M-1. `previous_month_days` est le seul moyen de savoir si « memes N jours » a un sens : des que `elapsed_days > previous_month_days`, dire « memes 31 jours » d'un mois de 28 est faux |
+| `is_closed_month` / `is_future_month` | bool | etat de **M** ; les deux faux = mois en cours |
+| `previous_is_current_month` | bool | **M-1 est le mois en cours** (filtre pose sur un mois a venir : `date_to` au 15/09 un 3 aout -> M = septembre, M-1 = aout). Interdit alors d'etiqueter `total_previous_full` « complet » — ce sont 3 jours de CA. **Ne se derive pas** des deux booleens ci-dessus : sur un M en cours, M-1 est clos, et les deux booleens sont faux dans les deux cas |
+| `note` | str | notes de lecture concatenees par ` · ` |
+
+Comme `is_closed_month` / `is_future_month`, `previous_is_current_month` est
+**affirme par le serveur** et le frontend a **interdiction de le deriver** : deux
+ecrans consomment ce payload et divergeraient a la premiere correction.
+
+L'ordre `M vs M-1` de `period_label` n'est pas cosmetique : avec l'ordre
+chronologique inverse, l'en-tete « juillet vs aout » place a cote d'un delta
+`▼ -96,6 %` se lisait « juillet en baisse », alors que c'est aout qui est bas.
+L'axe du graphique, lui, reste **chronologique** (M-1 puis M) : c'est un axe de
+temps, et sa legende nomme ses deux series.
 
 ### Reponse de `/pos_dashboard/filters_data`
 
