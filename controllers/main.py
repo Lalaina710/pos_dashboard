@@ -1285,9 +1285,16 @@ class PosDashboardController(http.Controller):
         }
 
         # --- Sessions actives ---
+        # user_id = compte Odoo qui a ouvert la session, PAS le caissier quand
+        # plusieurs employes partagent un compte (login employe pos_hr). Le
+        # caissier est employee_id, qui n'existe que si pos_hr est installe :
+        # le module ne depend que de point_of_sale, d'ou le test sur _fields.
+        session_fields = ['name', 'user_id', 'config_id', 'start_at']
+        if 'employee_id' in PosSession._fields:
+            session_fields.append('employee_id')
         active_sessions = PosSession.search_read(
             session_domain,
-            fields=['name', 'user_id', 'config_id', 'start_at'],
+            fields=session_fields,
             order='start_at desc',
         )
 

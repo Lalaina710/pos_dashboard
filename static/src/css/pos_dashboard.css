@@ -378,6 +378,13 @@
     border-bottom: 1px solid var(--border-light);
     color: var(--text-2);
 }
+
+/* Sessions actives : compte ouvreur sous le nom du caissier (employe pos_hr) */
+.pos_dashboard .mo-table .sess-opened-by {
+    font-size: 0.8em;
+    color: var(--text-3);
+    margin-top: 2px;
+}
 .pos_dashboard .mo-table tr { cursor: pointer; }
 .pos_dashboard .mo-table tbody tr:nth-child(even) td {
     background: var(--table-stripe);

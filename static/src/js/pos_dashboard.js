@@ -1,9 +1,14 @@
 /** @odoo-module **/
+/* global luxon */
 
 import { Component, useState, onWillStart, onMounted, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { rpc } from "@web/core/network/rpc";
+import { deserializeDateTime, formatDateTime, serializeDateTime } from "@web/core/l10n/dates";
+import { user } from "@web/core/user";
+
+const { DateTime } = luxon;
 
 class PosDashboard extends Component {
     static template = "pos_dashboard.PosDashboard";
@@ -47,6 +52,10 @@ class PosDashboard extends Component {
             darkMode: localStorage.getItem('pos_dashboard_dark') === 'true',
         });
         this._refreshTimer = null;
+        // Filtres PdV / caissier effectivement envoyes au dernier loadData :
+        // ce sont eux qui ont produit les cartes affichees. state.filters, lui,
+        // bouge des qu'on touche une liste deroulante, avant « Appliquer ».
+        this._appliedFilters = { pos_config_id: 0, user_id: 0 };
 
         onWillStart(async () => {
             await this.loadFiltersData();
@@ -98,6 +107,10 @@ class PosDashboard extends Component {
             if (!filters.date_from) delete filters.date_from;
             if (!filters.date_to) delete filters.date_to;
 
+            this._appliedFilters = {
+                pos_config_id: filters.pos_config_id || 0,
+                user_id: filters.user_id || 0,
+            };
             const data = await rpc("/pos_dashboard/data", { filters });
             // Un payload absent ou incomplet (403 du controleur, 500, proxy qui
             // renvoie du vide) doit etre traite comme une ERREUR. Sans ce test,
@@ -879,21 +892,95 @@ class PosDashboard extends Component {
             || f.chart_days !== 7 || f.recent_days !== 30;
     }
 
+    /**
+     * Caissier d'une session active : l'employe (pos_hr, employee_id) s'il
+     * est renseigne, sinon le compte ouvreur (user_id) comme avant. employee_id
+     * est absent du payload si pos_hr n'est pas installe (main.py).
+     */
+    sessionCashierName(sess) {
+        if (sess.employee_id) {
+            return sess.employee_id[1];
+        }
+        return sess.user_id ? sess.user_id[1] : '-';
+    }
+
+    /**
+     * Compte ouvreur a afficher sous le caissier, seulement quand il differe
+     * de l'employe. Comparaison sur les NOMS (l'employe n'expose pas son
+     * user_id dans ce payload) : un employe homonyme de son compte — cas d'un
+     * employe lie a son propre utilisateur — n'affiche donc rien.
+     */
+    sessionOpenerName(sess) {
+        if (!sess.employee_id || !sess.user_id) {
+            return '';
+        }
+        const norm = (s) => (s || '').trim().toLowerCase();
+        const opener = sess.user_id[1];
+        return norm(opener) === norm(sess.employee_id[1]) ? '' : opener;
+    }
+
     formatDatetime(dt) {
+        // dt = Datetime serveur "YYYY-MM-DD HH:MM:SS" en UTC, sans fuseau.
+        // new Date(dt) la lisait comme heure locale -> affichage UTC brut
+        // (ticket 14102026-02). deserializeDateTime la parse en UTC puis la
+        // convertit dans le fuseau d'affichage du client web Odoo.
         if (!dt) return '';
-        const d = new Date(dt);
-        return d.toLocaleString("fr-FR", {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+        return formatDateTime(deserializeDateTime(dt), { format: "dd/MM/yyyy HH:mm" });
+    }
+
+    /**
+     * Bornes UTC (format serveur) du jour et du mois courants, calculees dans
+     * le fuseau user.tz (repli 'Indian/Antananarivo', comme le controller
+     * main.py:215 ; repli supplementaire sur le fuseau du navigateur si tz est
+     * invalide, la ou le controller leverait une erreur). Jour = [00:00:00,
+     * 23:59:59] local, mois = [1er 00:00:00, fin du jour courant] : memes bornes
+     * que today_domain / month_domain (main.py:317-344).
+     * Seules les bornes temporelles sont produites ici : les filtres PdV /
+     * caissier viennent de _activeFilterDomain(). « Maintenant » est evalue au
+     * clic, pas au chargement : un dashboard charge avant minuit et clique
+     * apres comparera deux journees differentes.
+     * date_order est un Datetime (UTC en base) : l'ancien
+     * toISOString().split('T')[0] + " 00:00:00" bornait la journee de 03:00 a
+     * 02:59 locale et faisait demarrer le mois le 30/09 a 03:00 locale.
+     */
+    _localPeriodBounds() {
+        let now = DateTime.now().setZone(user.tz || "Indian/Antananarivo");
+        if (!now.isValid) {
+            now = DateTime.now();
+        }
+        return {
+            dayStart: serializeDateTime(now.startOf("day")),
+            dayEnd: serializeDateTime(now.endOf("day")),
+            monthStart: serializeDateTime(now.startOf("month")),
+        };
+    }
+
+    /**
+     * Criteres PdV / caissier a ajouter au domaine d'un drill-down, reproduits
+     * champ par champ depuis le controller (main.py:291-299, 311-313) a partir
+     * des filtres du DERNIER chargement (_appliedFilters), pas des listes
+     * deroulantes en cours d'edition :
+     *   - pos.order   (base_domain)    : config_id = pos_config_id,
+     *                                    user_id = user_id
+     *   - pos.session (session_domain) : config_id = pos_config_id seulement
+     * 0 / absent = pas de filtre (_bounded_int, plancher 0). date_from /
+     * date_to ne s'appliquent PAS a ces cartes (today/month_domain n'utilisent
+     * pas date_domain) : ils ne sont donc pas repris.
+     */
+    _activeFilterDomain({ includeUser = true } = {}) {
+        const { pos_config_id, user_id } = this._appliedFilters;
+        const domain = [];
+        if (Number.isInteger(pos_config_id) && pos_config_id > 0) {
+            domain.push(["config_id", "=", pos_config_id]);
+        }
+        if (includeUser && Number.isInteger(user_id) && user_id > 0) {
+            domain.push(["user_id", "=", user_id]);
+        }
+        return domain;
     }
 
     openOrdersToday() {
-        const today = new Date();
-        const todayStr = today.toISOString().split('T')[0];
+        const { dayStart, dayEnd } = this._localPeriodBounds();
         this.action.doAction({
             type: "ir.actions.act_window",
             name: "Commandes aujourd'hui",
@@ -903,16 +990,16 @@ class PosDashboard extends Component {
                 [false, "form"],
             ],
             domain: [
-                ["date_order", ">=", todayStr + " 00:00:00"],
-                ["date_order", "<=", todayStr + " 23:59:59"],
+                ...this._activeFilterDomain(),
+                ["date_order", ">=", dayStart],
+                ["date_order", "<=", dayEnd],
             ],
             target: "current",
         });
     }
 
     openReturnsToday() {
-        const today = new Date();
-        const todayStr = today.toISOString().split('T')[0];
+        const { dayStart, dayEnd } = this._localPeriodBounds();
         this.action.doAction({
             type: "ir.actions.act_window",
             name: "Retours aujourd'hui",
@@ -922,8 +1009,9 @@ class PosDashboard extends Component {
                 [false, "form"],
             ],
             domain: [
-                ["date_order", ">=", todayStr + " 00:00:00"],
-                ["date_order", "<=", todayStr + " 23:59:59"],
+                ...this._activeFilterDomain(),
+                ["date_order", ">=", dayStart],
+                ["date_order", "<=", dayEnd],
                 ["amount_total", "<", 0],
             ],
             target: "current",
@@ -939,15 +1027,17 @@ class PosDashboard extends Component {
                 [false, "list"],
                 [false, "form"],
             ],
-            domain: [["state", "=", "opened"]],
+            // session_domain (main.py:311-313) : PdV seul, pas de caissier.
+            domain: [
+                ["state", "=", "opened"],
+                ...this._activeFilterDomain({ includeUser: false }),
+            ],
             target: "current",
         });
     }
 
     openMonthOrders() {
-        const now = new Date();
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const monthStartStr = monthStart.toISOString().split('T')[0];
+        const { monthStart, dayEnd } = this._localPeriodBounds();
         this.action.doAction({
             type: "ir.actions.act_window",
             name: "Commandes du mois",
@@ -957,7 +1047,9 @@ class PosDashboard extends Component {
                 [false, "form"],
             ],
             domain: [
-                ["date_order", ">=", monthStartStr + " 00:00:00"],
+                ...this._activeFilterDomain(),
+                ["date_order", ">=", monthStart],
+                ["date_order", "<=", dayEnd],
             ],
             target: "current",
         });

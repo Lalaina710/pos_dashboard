@@ -618,7 +618,14 @@
                                     <t t-foreach="state.data.active_sessions" t-as="sess" t-key="sess.id">
                                         <tr>
                                             <td t-esc="sess.name"/>
-                                            <td t-esc="sess.user_id ? sess.user_id[1] : '-'"/>
+                                            <!-- Caissier = employe pos_hr ; repli sur le compte
+                                                 ouvreur si pas d'employe (ou pos_hr absent). -->
+                                            <td>
+                                                <t t-esc="sessionCashierName(sess)"/>
+                                                <div t-if="sessionOpenerName(sess)" class="sess-opened-by">
+                                                    ouvert par <t t-esc="sessionOpenerName(sess)"/>
+                                                </div>
+                                            </td>
                                             <td t-esc="sess.config_id ? sess.config_id[1] : '-'"/>
                                             <td t-esc="formatDatetime(sess.start_at)"/>
                                         </tr>
